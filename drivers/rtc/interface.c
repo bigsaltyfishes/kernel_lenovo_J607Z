@@ -483,7 +483,11 @@ int rtc_set_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 	rtc->aie_timer.node.expires = rtc_tm_to_ktime(alarm->time);
 	rtc->aie_timer.period = 0;
 	if (alarm->enabled)
+	{
+		dump_stack();
+		printk("[TestLog]rtc_set_alarm printk: %lld",ktime_to_ms(rtc->aie_timer.node.expires));
 		err = rtc_timer_enqueue(rtc, &rtc->aie_timer);
+	}
 
 	mutex_unlock(&rtc->ops_lock);
 

@@ -39,11 +39,21 @@
 #include <linux/acpi.h>
 #include <linux/of.h>
 #include <linux/regulator/consumer.h>
+#include <linux/pm_wakeup.h>
+#ifdef CONFIG_DRM
+//#include <linux/msm_drm_notify.h>
+#endif
+
+#ifdef CONFIG_FB
+#include <linux/fb.h>
+#endif
 
 #include <linux/platform_data/i2c-hid.h>
 
 #include "../hid-ids.h"
 #include "i2c-hid.h"
+#include <linux/gpio.h>
+#include <linux/of_gpio.h>
 
 /* quirks to control the device */
 #define I2C_HID_QUIRK_SET_PWR_WAKEUP_DEV	BIT(0)
@@ -62,6 +72,16 @@
 
 #define I2C_HID_PWR_ON		0x00
 #define I2C_HID_PWR_SLEEP	0x01
+
+extern int off_mode;
+//int kb_hall_status=0;
+extern int register_kb_wakeup_devices(void);
+extern int register_mouse_wakeup_devices(void);
+extern void report_power_key(void);
+extern void hidinput_connection_worker(struct work_struct *work);
+int kb_connect_status=0;
+bool irq_wake_enabled=0;
+bool power_status=0;
 
 /* debug option */
 static bool debug;
@@ -165,6 +185,10 @@ struct i2c_hid {
 	struct mutex		reset_lock;
 
 	unsigned long		sleep_delay;
+	int					kb_ocp_irq;
+	#if defined(CONFIG_DRM) || defined(CONFIG_FB)
+	//struct notifier_block fb_notifier;
+	#endif
 };
 
 static const struct i2c_hid_quirks {
@@ -191,6 +215,12 @@ static const struct i2c_hid_quirks {
 		 I2C_HID_QUIRK_RESET_ON_RESUME },
 	{ USB_VENDOR_ID_ITE, I2C_DEVICE_ID_ITE_LENOVO_LEGION_Y720,
 		I2C_HID_QUIRK_BAD_INPUT_SIZE },
+	{ I2C_VENDOR_ID_HT32F5_KEY, I2C_PRODUCT_ID_HT32F5_KEY,
+		I2C_HID_QUIRK_NO_IRQ_AFTER_RESET |
+		I2C_HID_QUIRK_NO_RUNTIME_PM },
+	{ I2C_VENDOR_ID_HT32F5_MOUSE, I2C_PRODUCT_ID_HT32F5_MOUSE,
+		I2C_HID_QUIRK_NO_IRQ_AFTER_RESET |
+		I2C_HID_QUIRK_NO_RUNTIME_PM },
 	{ 0, 0 }
 };
 
@@ -454,8 +484,9 @@ set_pwr_exit:
 	 * PWR_ON requests. Testing has confirmed that several devices
 	 * will not work properly without a delay after a PWR_ON request.
 	 */
-	if (!ret && power_state == I2C_HID_PWR_ON)
+	if (!ret && power_state == I2C_HID_PWR_ON){
 		msleep(60);
+	}
 
 	return ret;
 }
@@ -493,9 +524,11 @@ out_unlock:
 
 static void i2c_hid_get_input(struct i2c_hid *ihid)
 {
-	int ret;
+	int ret,i=0;
 	u32 ret_size;
+	int adc_value=0;
 	int size = le16_to_cpu(ihid->hdesc.wMaxInputLength);
+    //int i=0;
 
 	if (size > ihid->bufsize)
 		size = ihid->bufsize;
@@ -511,6 +544,30 @@ static void i2c_hid_get_input(struct i2c_hid *ihid)
 	}
 
 	ret_size = ihid->inbuf[0] | ihid->inbuf[1] << 8;
+	//ret_size = ihid->inbuf[0];
+	printk(KERN_DEBUG "ret_size =%d,size=%d",ret_size,size );
+	for(;i<15;i++){
+		printk(KERN_DEBUG "ihid->inbuf[%d] =0x%x",i , ihid->inbuf[i] );
+	}
+	if(ihid->inbuf[2]==0x06){
+		//kb_hall_status=(ihid->inbuf[3]&0x80)>>8;
+		adc_value= ihid->inbuf[7]| ihid->inbuf[8]<<8;
+		kb_connect_status=ihid->inbuf[3]&0x01;
+
+		printk(KERN_DEBUG "adc_value =0x%x,kb_hall_status=0x%x,kb_connect_status=%d",adc_value,(ihid->inbuf[3]&0x80)>>8,kb_connect_status);
+
+	}
+
+	if(ihid->hid->input_registered==false&&kb_connect_status){
+		hidinput_connect(ihid->hid,0);
+		if(power_status==0&&irq_wake_enabled==true){
+			report_power_key();
+			power_status=1;
+		}
+	}else if(kb_connect_status==0&&ihid->hid->input_registered){
+		hidinput_disconnect(ihid->hid);
+		power_status=0;
+	}
 
 	if (!ret_size) {
 		/* host or device initiated RESET completed */
@@ -522,6 +579,7 @@ static void i2c_hid_get_input(struct i2c_hid *ihid)
 	if (ihid->quirks & I2C_HID_QUIRK_BOGUS_IRQ && ret_size == 0xffff) {
 		dev_warn_once(&ihid->client->dev, "%s: IRQ triggered but "
 			      "there's no data\n", __func__);
+		printk(KERN_DEBUG "IRQ triggered but NO DATA" );
 		return;
 	}
 
@@ -861,11 +919,31 @@ struct hid_ll_driver i2c_hid_ll_driver = {
 };
 EXPORT_SYMBOL_GPL(i2c_hid_ll_driver);
 
+//add for KB ocp begin
+static irqreturn_t ocp_irq_handler(int irq, void *dev_id)
+{
+	struct i2c_hid *ihid = dev_id;
+	int value;
+	printk("%s:KB ocp irq handler detected.KBocp\n",__func__);
+	value = gpio_get_value(ihid->kb_ocp_irq);
+	if (value == 0) {
+		printk("%s:Trigger KB ocp, pull mcu_en_gpio down.KBocp\n",__func__);
+		gpio_set_value(ihid->pdata.mcu_en_gpio,0);
+	} else {
+		printk("%s: KB ocp Recovery, pull mcu_en_gpio up.KBocp\n",__func__);
+		gpio_set_value(ihid->pdata.mcu_en_gpio,1);
+	}
+
+	return IRQ_HANDLED;
+}
+//add for KB ocp end
+
 static int i2c_hid_init_irq(struct i2c_client *client)
 {
 	struct i2c_hid *ihid = i2c_get_clientdata(client);
+	struct device *dev = &client->dev;//KB
 	unsigned long irqflags = 0;
-	int ret;
+	int ret,ocp_irq;
 
 	dev_dbg(&client->dev, "Requesting IRQ: %d\n", client->irq);
 
@@ -882,6 +960,30 @@ static int i2c_hid_init_irq(struct i2c_client *client)
 
 		return ret;
 	}
+	enable_irq_wake(client->irq);
+
+//add for KB ocp begin
+	ihid->kb_ocp_irq = of_get_named_gpio(dev->of_node,"pogo_ocp_int",0);
+	if (ihid->kb_ocp_irq < 0) {
+		printk("%s:get gpio name failed(%d),<pogo_ocp_int>.KBocp\n",__func__,ihid->kb_ocp_irq);
+	} else {
+		printk("%s:get gpio name successed(%d),<pogo_ocp_int>.KBocp\n",__func__,ihid->kb_ocp_irq);
+		if (gpio_is_valid(ihid->kb_ocp_irq)) {
+			ocp_irq = gpio_to_irq(ihid->kb_ocp_irq);
+			printk("%s:kb ocp irq num:%d.KBocp\n",__func__,ocp_irq);
+			ret = request_threaded_irq(ocp_irq, NULL, ocp_irq_handler, IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING | IRQF_ONESHOT, "ocp_detect", ihid);
+			if (ret < 0) {
+				printk("%s:Failed to request kb ocp irq handler.KBocp");
+				return ret;
+			}
+		} else
+			printk("%s:kb ocp irq gpio(%d) is not valid,<pogo_ocp_int>,KBocp");
+	}
+	enable_irq_wake(ocp_irq);
+//add for KB ocp end
+
+	device_init_wakeup(&client->dev, true);
+
 
 	return 0;
 }
@@ -997,6 +1099,30 @@ static inline int i2c_hid_acpi_pdata(struct i2c_client *client,
 
 static inline void i2c_hid_acpi_fix_up_power(struct device *dev) {}
 #endif
+/*
+#ifdef CONFIG_DRM
+int hid_drm_notifier_callback(struct notifier_block self, unsigned long event,void* data)
+{
+	struct i2c_hid *core_data=container_of(self, struct i2c_hid, fb_notifier);
+	struct fb_event *fb_event=data;
+	printk(KERN_DEBUG "hid_drm_notifier_callback");
+	if(fb_event &&fb_event->data&&core_data){
+		int* blank =fb_event->data;
+		if(event==MSM_DRM_EARLY_EVENT_BLANK){
+			if(*blank==MSM_DRM_BLANK_POWERDOWN){
+				irq_wake_enabled=true;
+				printk(KERN_DEBUG "callback suspend irq wake");
+
+			}else if(*blank==MSM_DRM_BLANK_UNBLANK){
+				irq_wake_enabled=false;
+				printk(KERN_DEBUG "callback suspend irq resume");
+			}
+		}
+	}
+	return 0;
+}
+#endif
+*/
 
 #ifdef CONFIG_OF
 static int i2c_hid_of_probe(struct i2c_client *client,
@@ -1018,6 +1144,8 @@ static int i2c_hid_of_probe(struct i2c_client *client,
 	}
 	pdata->hid_descriptor_address = val;
 
+	pdata->mcu_en_gpio = of_get_named_gpio_flags(dev->of_node, "mcu_en_gpio",
+				0, &pdata->mcu_en_gpio_flags);
 	return 0;
 }
 
@@ -1047,13 +1175,18 @@ static void i2c_hid_fwnode_probe(struct i2c_client *client,
 static int i2c_hid_probe(struct i2c_client *client,
 			 const struct i2c_device_id *dev_id)
 {
-	int ret;
+	int ret,i=0;
 	struct i2c_hid *ihid;
 	struct hid_device *hid;
 	__u16 hidRegister;
 	struct i2c_hid_platform_data *platform_data = client->dev.platform_data;
 
 	dbg_hid("HID probe called for i2c 0x%02x\n", client->addr);
+
+
+	#ifdef CONFIG_DRM
+	//struct notifier_block fb_notifier;
+	#endif
 
 	if (!client->irq) {
 		dev_err(&client->dev,
@@ -1083,6 +1216,34 @@ static int i2c_hid_probe(struct i2c_client *client,
 	} else {
 		ihid->pdata = *platform_data;
 	}
+
+	if(gpio_get_value(ihid->pdata.mcu_en_gpio)==0){
+		ret = gpio_request(ihid->pdata.mcu_en_gpio, "mcu_en_gpio");
+		if (ret < 0) {
+				dev_err(&client->dev,"i2c_hid_probe : gpio_request mcu_en_gpio fail rc=%d\n", ret);
+		}
+
+		ret= gpio_direction_output(ihid->pdata.mcu_en_gpio,1);
+		if (ret < 0) {
+				dev_err(&client->dev,"i2c_hid_probe: gpio_direction_output mcu_en_gpio fail rc=%d\n", ret);
+				return ret;
+		}
+	}
+	//pengcheng add off charging mode will not enable the pogo mcu 5.2v output
+	if(gpio_get_value(ihid->pdata.mcu_en_gpio)==1&&off_mode){
+
+		dev_err(&client->dev,"i2c_hid_probe: off charging mode, will not enable the pogo mcu\n");
+		ret= gpio_direction_output(ihid->pdata.mcu_en_gpio,0);
+		if (ret < 0) {
+				dev_err(&client->dev,"i2c_hid_probe: gpio_direction_output mcu_en_gpio to 0 fail rc=%d\n", ret);
+				return ret;
+		}
+	}
+	msleep(100);
+
+	dev_err(&client->dev,"i2c_hid_probe: mcu en gpios = 0x%x, gpio value=%d\n", ihid->pdata.mcu_en_gpio, gpio_get_value(ihid->pdata.mcu_en_gpio));
+
+
 
 	/* Parse platform agnostic common properties from ACPI / device tree */
 	i2c_hid_fwnode_probe(client, &ihid->pdata);
@@ -1128,17 +1289,27 @@ static int i2c_hid_probe(struct i2c_client *client,
 	pm_runtime_enable(&client->dev);
 	device_enable_async_suspend(&client->dev);
 
+
+
+label:
 	/* Make sure there is something at this address */
 	ret = i2c_smbus_read_byte(client);
 	if (ret < 0) {
 		dev_dbg(&client->dev, "nothing at this address: %d\n", ret);
-		ret = -ENXIO;
-		goto err_pm;
+		//ret = -ENXIO;
+		//goto err_pm;
 	}
 
 	ret = i2c_hid_fetch_hid_descriptor(ihid);
-	if (ret < 0)
+	if (ret < 0){
+		if(i<3){
+			i++;
+			msleep(10);
+			goto label;
+		}
+		else
 		goto err_pm;
+	}
 
 	ret = i2c_hid_init_irq(client);
 	if (ret < 0)
@@ -1159,9 +1330,23 @@ static int i2c_hid_probe(struct i2c_client *client,
 	hid->version = le16_to_cpu(ihid->hdesc.bcdVersion);
 	hid->vendor = le16_to_cpu(ihid->hdesc.wVendorID);
 	hid->product = le16_to_cpu(ihid->hdesc.wProductID);
+	hid->input_registered=false;
 
-	snprintf(hid->name, sizeof(hid->name), "%s %04hX:%04hX",
+	//snprintf(hid->name, sizeof(hid->name), "%s %04hX:%04hX",
+		// client->name, hid->vendor, hid->product);
+	if(hid->vendor==0x17EF&&hid->product==0x6103){
+		snprintf(hid->name, sizeof(hid->name), "%s %04hX:%04hX P11 5G KeyBoard Lenovo",
 		 client->name, hid->vendor, hid->product);
+		register_kb_wakeup_devices();
+	}
+	if(hid->vendor==0x04F3&&hid->product==0x3164){
+		snprintf(hid->name, sizeof(hid->name), "%s %04hX:%04hX P11 5G TouchPad",
+		 client->name, hid->vendor, hid->product);
+		register_mouse_wakeup_devices();
+	}
+	printk(KERN_DEBUG "hid->version_id=0x%x ",le16_to_cpu(ihid->hdesc.wVersionID));
+
+	printk(KERN_DEBUG "hid->version=0x%x,hid->vendor=0x%x,hid->product=0x%x ",hid->version ,hid->vendor,hid->product);
 	strlcpy(hid->phys, dev_name(&client->dev), sizeof(hid->phys));
 
 	ihid->quirks = i2c_hid_lookup_quirk(hid->vendor, hid->product);
@@ -1175,6 +1360,14 @@ static int i2c_hid_probe(struct i2c_client *client,
 
 	if (!(ihid->quirks & I2C_HID_QUIRK_NO_RUNTIME_PM))
 		pm_runtime_put(&client->dev);
+
+	INIT_WORK(&hid->connection_work, hidinput_connection_worker);
+	schedule_work(&hid->connection_work);
+
+
+#ifdef CONFIG_DRM
+	/*ihid->fb_notifier.notifier_call=hid_drm_notifier_callback;*/
+#endif
 
 	return 0;
 
@@ -1237,6 +1430,7 @@ static int i2c_hid_suspend(struct device *dev)
 	int ret;
 	int wake_status;
 
+	dbg_hid("hid suspend\n");
 	if (hid->driver && hid->driver->suspend) {
 		/*
 		 * Wake up the device so that IO issues in
@@ -1254,8 +1448,7 @@ static int i2c_hid_suspend(struct device *dev)
 	if (!pm_runtime_suspended(dev)) {
 		/* Save some power */
 		i2c_hid_set_power(client, I2C_HID_PWR_SLEEP);
-
-		disable_irq(client->irq);
+		//disable_irq(client->irq);
 	}
 
 	if (device_may_wakeup(&client->dev)) {
@@ -1275,12 +1468,13 @@ static int i2c_hid_suspend(struct device *dev)
 
 static int i2c_hid_resume(struct device *dev)
 {
-	int ret;
+	int ret,i=0;
 	struct i2c_client *client = to_i2c_client(dev);
 	struct i2c_hid *ihid = i2c_get_clientdata(client);
 	struct hid_device *hid = ihid->hid;
 	int wake_status;
 
+	dbg_hid("hid resume\n");
 	if (!device_may_wakeup(&client->dev)) {
 		ret = regulator_bulk_enable(ARRAY_SIZE(ihid->pdata.supplies),
 					    ihid->pdata.supplies);
@@ -1288,7 +1482,7 @@ static int i2c_hid_resume(struct device *dev)
 			hid_warn(hid, "Failed to enable supplies: %d\n", ret);
 
 		if (ihid->pdata.post_power_delay_ms)
-			msleep(ihid->pdata.post_power_delay_ms);
+			mdelay(ihid->pdata.post_power_delay_ms);
 	} else if (ihid->irq_wake_enabled) {
 		wake_status = disable_irq_wake(client->irq);
 		if (!wake_status)
@@ -1303,7 +1497,7 @@ static int i2c_hid_resume(struct device *dev)
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
 
-	enable_irq(client->irq);
+	//enable_irq(client->irq);
 
 	/* Instead of resetting device, simply powers the device on. This
 	 * solves "incomplete reports" on Raydium devices 2386:3118 and
@@ -1313,13 +1507,20 @@ static int i2c_hid_resume(struct device *dev)
 	 * However some ALPS touchpads generate IRQ storm without reset, so
 	 * let's still reset them here.
 	 */
+
+label:
 	if (ihid->quirks & I2C_HID_QUIRK_RESET_ON_RESUME)
 		ret = i2c_hid_hwreset(client);
 	else
 		ret = i2c_hid_set_power(client, I2C_HID_PWR_ON);
 
-	if (ret)
-		return ret;
+	if (ret){
+		if(i++<3){
+			msleep(10);
+			printk(KERN_DEBUG "hid set power failed");
+			goto label;
+		}
+	}
 
 	if (hid->driver && hid->driver->reset_resume) {
 		ret = hid->driver->reset_resume(hid);
@@ -1343,6 +1544,7 @@ static int i2c_hid_runtime_suspend(struct device *dev)
 static int i2c_hid_runtime_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
+
 
 	enable_irq(client->irq);
 	i2c_hid_set_power(client, I2C_HID_PWR_ON);

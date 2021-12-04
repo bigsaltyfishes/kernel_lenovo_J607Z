@@ -52,6 +52,9 @@ MODULE_LICENSE("GPL");
 
 #include "hid-ids.h"
 
+extern bool irq_wake_enabled;
+extern void report_power_key(void);
+
 /* quirks to control the device */
 #define MT_QUIRK_NOT_SEEN_MEANS_UP	BIT(0)
 #define MT_QUIRK_SLOT_IS_CONTACTID	BIT(1)
@@ -207,6 +210,7 @@ static void mt_post_parse(struct mt_device *td, struct mt_application *app);
 #define MT_CLS_VTL				0x0110
 #define MT_CLS_GOOGLE				0x0111
 #define MT_CLS_RAZER_BLADE_STEALTH		0x0112
+#define MT_CLS_HOLTEX		0x0113
 
 #define MT_DEFAULT_MAXCONTACT	10
 #define MT_MAX_MAXCONTACT	250
@@ -1116,6 +1120,15 @@ static void mt_process_mt_event(struct hid_device *hid,
 		}
 	}
 
+	if(irq_wake_enabled==true){
+		//dbg_hid("irq_wake_enabled ,usage->code=0x%x\n",usage->code);
+		if(usage->code==0x110||usage->code==0x112){
+			report_power_key();
+			irq_wake_enabled=false;
+			return;
+		}
+	}
+
 	input_event(input, usage->type, usage->code, value);
 }
 
@@ -1372,11 +1385,13 @@ static void mt_report(struct hid_device *hid, struct hid_report *report)
 		return;
 
 	rdata = mt_find_report_data(td, report);
-	if (rdata && rdata->is_mt_collection)
+	if (rdata && rdata->is_mt_collection){
 		return mt_touch_report(hid, rdata);
+	}
 
-	if (field && field->hidinput && field->hidinput->input)
+	if (field && field->hidinput && field->hidinput->input){
 		input_sync(field->hidinput->input);
+	}
 }
 
 static bool mt_need_to_apply_feature(struct hid_device *hdev,
@@ -1554,8 +1569,10 @@ static int mt_input_configured(struct hid_device *hdev, struct hid_input *hi)
 	if (!suffix) {
 		switch (application) {
 		case HID_GD_KEYBOARD:
+			printk(KERN_DEBUG "mt_input_configured: KEY" );
 		case HID_GD_KEYPAD:
 		case HID_GD_MOUSE:
+			printk(KERN_DEBUG "mt_input_configured: Mouse" );
 		case HID_DG_TOUCHPAD:
 		case HID_GD_SYSTEM_CONTROL:
 		case HID_CP_CONSUMER_CONTROL:
@@ -1564,6 +1581,7 @@ static int mt_input_configured(struct hid_device *hdev, struct hid_input *hi)
 			/* already handled by hid core */
 			break;
 		case HID_DG_TOUCHSCREEN:
+		case HID_USER_DEFINE:
 			/* we do not set suffix = "Touchscreen" */
 			hi->input->name = hdev->name;
 			break;
@@ -1770,6 +1788,15 @@ static void mt_remove(struct hid_device *hdev)
  */
 static const struct hid_device_id mt_devices[] = {
 
+	{ .driver_data = MT_CLS_HOLTEX,
+		HID_DEVICE(BUS_I2C, HID_GROUP_ANY,
+			I2C_VENDOR_ID_HT32F5_KEY,
+			I2C_PRODUCT_ID_HT32F5_KEY) },
+
+	{ .driver_data = MT_CLS_HOLTEX,
+		HID_DEVICE(BUS_I2C, HID_GROUP_ANY,
+			I2C_VENDOR_ID_HT32F5_MOUSE,
+			I2C_PRODUCT_ID_HT32F5_MOUSE) },
 	/* 3M panels */
 	{ .driver_data = MT_CLS_3M,
 		MT_USB_DEVICE(USB_VENDOR_ID_3M,

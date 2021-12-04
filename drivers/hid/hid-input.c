@@ -33,6 +33,13 @@
 #include <linux/hid-debug.h>
 
 #include "hid-ids.h"
+struct input_dev *kb_input_dev=NULL;
+struct input_dev *mouse_input_dev=NULL;
+extern bool irq_wake_enabled;
+extern int kb_connect_status;
+
+void report_power_key(void);
+
 
 #define unk	KEY_UNKNOWN
 
@@ -1013,6 +1020,11 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 		case 0x221: map_key_clear(KEY_SEARCH);		break;
 		case 0x222: map_key_clear(KEY_GOTO);		break;
 		case 0x223: map_key_clear(KEY_HOMEPAGE);	break;
+                case 0x38d: map_key_clear(KEY_FULLSCREEN);	break;
+                case 0x38e: map_key_clear(KEY_SCREENLOCK);	break;
+                case 0x390: map_key_clear(KEY_SWITCHLANGUAGE);	break;
+                case 0x38f: map_key_clear(KEY_NC);	        break;
+                /*add FULLSCREEN,SCREENLOCK,SWITCHLANGUAGE,SCREENLOCK*/
 		case 0x224: map_key_clear(KEY_BACK);		break;
 		case 0x225: map_key_clear(KEY_FORWARD);		break;
 		case 0x226: map_key_clear(KEY_STOP);		break;
@@ -1348,6 +1360,14 @@ void hidinput_hid_event(struct hid_device *hid, struct hid_field *field, struct 
 	    (!test_bit(usage->code, input->key)) == value)
 		input_event(input, EV_MSC, MSC_SCAN, usage->hid);
 
+	if(irq_wake_enabled==true){
+		if(usage->code!=KEY_COFFEE){
+			report_power_key();
+			irq_wake_enabled=false;
+			return;
+		}
+	}
+
 	input_event(input, usage->type, usage->code, value);
 
 	if ((field->flags & HID_MAIN_ITEM_RELATIVE) &&
@@ -1476,6 +1496,19 @@ static void hidinput_led_worker(struct work_struct *work)
 	kfree(buf);
 }
 
+void hidinput_connection_worker(struct work_struct *work)
+{
+	struct hid_device *hid = container_of(work, struct hid_device,
+					      connection_work);
+	dbg_hid("hidinput connection work start,vendor:0x%x\n",hid->vendor);
+
+	if(hid->input_registered==false&&kb_connect_status){
+		hidinput_connect(hid,0);
+	}else if(kb_connect_status==0&&hid->input_registered)
+		hidinput_disconnect(hid);
+}
+
+
 static int hidinput_input_event(struct input_dev *dev, unsigned int type,
 				unsigned int code, int value)
 {
@@ -1546,9 +1579,24 @@ static void report_features(struct hid_device *hid)
 static struct hid_input *hidinput_allocate(struct hid_device *hid,
 					   unsigned int application)
 {
-	struct hid_input *hidinput = kzalloc(sizeof(*hidinput), GFP_KERNEL);
-	struct input_dev *input_dev = input_allocate_device();
+	struct hid_input *hidinput;
+	struct input_dev *input_dev;
 	const char *suffix = NULL;
+	 /*0x6103 is keyboard product id, this is for the exception if other hid devices has
+	 the same application and same report id, this could cause collision*/
+	if((application==HID_CP_CONSUMER_CONTROL||application==HID_USER_DEFINE)&&hid->product==0x6103){
+		list_for_each_entry(hidinput, &hid->inputs, list) {
+			/* report id 0x3 is for keyboard, share the input dev with consumer key*/
+			if (hidinput->report &&hidinput->report->id == 0x3){
+				input_dev=hidinput->input;
+				break;
+			 }
+		}
+	}else{
+		printk(KERN_DEBUG "allocate,report->id=0x%x",hidinput->report->id);
+		input_dev = input_allocate_device();
+	}
+	hidinput = kzalloc(sizeof(*hidinput), GFP_KERNEL);
 
 	if (!hidinput || !input_dev)
 		goto fail;
@@ -1586,6 +1634,9 @@ static struct hid_input *hidinput_allocate(struct hid_device *hid,
 		case HID_GD_SYSTEM_MULTIAXIS:
 			suffix = "System Multi Axis";
 			break;
+		case HID_USER_DEFINE:
+			suffix = "User Defined";
+			break;
 		default:
 			break;
 		}
@@ -1605,7 +1656,8 @@ static struct hid_input *hidinput_allocate(struct hid_device *hid,
 	input_dev->setkeycode = hidinput_setkeycode;
 	input_dev->getkeycode = hidinput_getkeycode;
 
-	input_dev->name = hidinput->name ? hidinput->name : hid->name;
+	//input_dev->name = hidinput->name ? hidinput->name : hid->name;
+	input_dev->name =hid->name;// use self defined name
 	input_dev->phys = hid->phys;
 	input_dev->uniq = hid->uniq;
 	input_dev->id.bustype = hid->bus;
@@ -1728,12 +1780,54 @@ static inline void hidinput_configure_usages(struct hid_input *hidinput,
 			hidinput_configure_usage(hidinput, report->field[i],
 						 report->field[i]->usage + j);
 }
-
+void report_power_key()
+{
+	printk(KERN_DEBUG "report_power_key");
+	input_report_key(kb_input_dev, KEY_POWER, 1);
+	input_sync(kb_input_dev);
+	input_report_key(kb_input_dev, KEY_POWER, 0);
+	input_sync(kb_input_dev);
+}
 /*
  * Register the input device; print a message.
  * Configure the input layer interface
  * Read all reports and initialize the absolute field values.
  */
+int register_kb_wakeup_devices(void)
+{
+	printk(KERN_DEBUG "==keyboard register_report_power_key==");
+	kb_input_dev = input_allocate_device();
+	if(kb_input_dev==NULL){
+		printk(KERN_ERR "failed to allocate keyboard report_power_key device");
+		return -1;
+	}
+	input_set_capability(kb_input_dev, EV_KEY, KEY_POWER);
+	kb_input_dev->name="keyboard_wakeup_devices";
+	if (input_register_device(kb_input_dev)){
+		printk(KERN_ERR "failed to register keyboard report_power_key device");
+		return -1;
+	}
+	return 0;
+
+}
+
+int register_mouse_wakeup_devices(void)
+{
+	printk(KERN_DEBUG "==mouse register_report_power_key==");
+	mouse_input_dev = input_allocate_device();
+	if(mouse_input_dev==NULL){
+		printk(KERN_ERR "failed to allocate mouse_wakeup_devices device");
+		return -1;
+	}
+	input_set_capability(mouse_input_dev, EV_KEY, KEY_POWER);
+	mouse_input_dev->name="mouse_wakeup_devices";
+	if (input_register_device(mouse_input_dev)){
+		printk(KERN_ERR "failed to register  mouse_wakeup_devices device");
+		return -1;
+	}
+	return 0;
+
+}
 
 int hidinput_connect(struct hid_device *hid, unsigned int force)
 {
@@ -1779,9 +1873,9 @@ int hidinput_connect(struct hid_device *hid, unsigned int force)
 			 * Find the previous hidinput report attached
 			 * to this report id.
 			 */
-			if (hid->quirks & HID_QUIRK_MULTI_INPUT)
+			if (hid->quirks & HID_QUIRK_MULTI_INPUT){
 				hidinput = hidinput_match(report);
-			else if (hid->maxapplication > 1 &&
+			}else if (hid->maxapplication > 1 &&
 				 (hid->quirks & HID_QUIRK_INPUT_PER_APP))
 				hidinput = hidinput_match_application(report);
 
@@ -1809,11 +1903,18 @@ int hidinput_connect(struct hid_device *hid, unsigned int force)
 		if (!hidinput_has_been_populated(hidinput)) {
 			/* no need to register an input device not populated */
 			hidinput_cleanup_hidinput(hid, hidinput);
+			printk(KERN_DEBUG "hidinput_has_been_populated ,application :0x%x",hidinput->application);
 			continue;
 		}
-
-		if (input_register_device(hidinput->input))
-			goto out_unwind;
+		if(hid->product==0x6103){	//0x6103 is keyboard peoduct id
+			if(hidinput->application!=HID_CP_CONSUMER_CONTROL&&hidinput->application!=HID_USER_DEFINE){
+				if (input_register_device(hidinput->input))
+					goto out_unwind;
+			}
+		}else{
+			if (input_register_device(hidinput->input))
+				goto out_unwind;
+		}
 		hidinput->registered = true;
 	}
 
@@ -1825,7 +1926,7 @@ int hidinput_connect(struct hid_device *hid, unsigned int force)
 	if (hid->status & HID_STAT_DUP_DETECTED)
 		hid_dbg(hid,
 			"Some usages could not be mapped, please use HID_QUIRK_INCREMENT_USAGE_ON_DUPLICATE if this is legitimate.\n");
-
+	hid->input_registered=true;
 	return 0;
 
 out_unwind:
@@ -1844,9 +1945,16 @@ void hidinput_disconnect(struct hid_device *hid)
 
 	list_for_each_entry_safe(hidinput, next, &hid->inputs, list) {
 		list_del(&hidinput->list);
-		if (hidinput->registered)
-			input_unregister_device(hidinput->input);
-		else
+
+		if (hidinput->registered){
+		//	input_unregister_device(hidinput->input);
+			if(hid->product==0x6103){	//0x6103 is keyboard product id
+				if(hidinput->application!=HID_CP_CONSUMER_CONTROL&&hidinput->application!=HID_USER_DEFINE)
+					input_unregister_device(hidinput->input);
+			}else{
+				input_unregister_device(hidinput->input);
+			}
+		}else
 			input_free_device(hidinput->input);
 		kfree(hidinput->name);
 		kfree(hidinput);
@@ -1857,6 +1965,7 @@ void hidinput_disconnect(struct hid_device *hid)
 	 * know that led_work will never get restarted, so we can cancel it
 	 * synchronously and are safe. */
 	cancel_work_sync(&hid->led_work);
+	hid->input_registered=false;
 }
 EXPORT_SYMBOL_GPL(hidinput_disconnect);
 
