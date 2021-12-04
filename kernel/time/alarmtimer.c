@@ -211,6 +211,8 @@ static enum hrtimer_restart alarmtimer_fired(struct hrtimer *timer)
 	alarmtimer_dequeue(base, alarm);
 	spin_unlock_irqrestore(&base->lock, flags);
 
+	printk("[TestLog]alarmtimer_fired:timer:[%p]\n",&timer);
+	printk("[TestLog]alarmtimer_fired: set %lld",ktime_to_ms(alarm->node.expires));
 	if (alarm->function)
 		restart = alarm->function(alarm, base->gettime());
 
@@ -301,6 +303,7 @@ static int alarmtimer_suspend(struct device *dev)
 
 	/* Set alarm, if in the past reject suspend briefly to handle */
 	ret = rtc_timer_start(rtc, &rtctimer, now, 0);
+	printk("[TestLog]alarmtimer_suspend: set %lld",ktime_to_ms(rtctimer.node.expires));
 	if (ret < 0)
 		__pm_wakeup_event(ws, MSEC_PER_SEC);
 	return ret;
@@ -366,7 +369,11 @@ void alarm_start(struct alarm *alarm, ktime_t start)
 
 	spin_lock_irqsave(&base->lock, flags);
 	alarm->node.expires = start;
+	dump_stack();
+	printk("[TestLog]alarm_start: set %lld",ktime_to_ms(alarm->node.expires));
+	printk("[TestLog]alarm_start: alarm->timer:[%p], Current task is %s[%d]\n",&alarm->timer, current->comm,task_pid_nr(current));
 	alarmtimer_enqueue(base, alarm);
+	printk("[TestLog]alarm_start: set real %lld",ktime_to_ms(alarm->node.expires));
 	hrtimer_start(&alarm->timer, alarm->node.expires, HRTIMER_MODE_ABS);
 	spin_unlock_irqrestore(&base->lock, flags);
 
