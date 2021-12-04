@@ -21,12 +21,15 @@
 #include <linux/debugfs.h>
 #include <linux/kmemleak.h>
 
+#include <linux/gpio.h>
+#include <linux/of_gpio.h>
 #define MAX_INST_NAME_LEN	40
 
 /* dload specific suppot */
 #define PID_MAGIC_ID		0x71432909
 #define SERIAL_NUM_MAGIC_ID	0x61945374
 #define SERIAL_NUMBER_LENGTH	128
+
 
 struct magic_num_struct {
 	uint32_t pid;

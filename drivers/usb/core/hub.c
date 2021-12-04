@@ -36,6 +36,9 @@
 #include "hub.h"
 #include "otg_whitelist.h"
 
+#include <linux/gpio.h>
+#include <linux/of_gpio.h>
+
 #define USB_VENDOR_GENESYS_LOGIC		0x05e3
 #define USB_VENDOR_SMSC				0x0424
 #define USB_PRODUCT_USB5534B			0x5534
@@ -1829,7 +1832,6 @@ static int hub_probe(struct usb_interface *intf, const struct usb_device_id *id)
 
 	/* We found a hub */
 	dev_info(&intf->dev, "USB hub found\n");
-
 	hub = kzalloc(sizeof(*hub), GFP_KERNEL);
 	if (!hub)
 		return -ENOMEM;
