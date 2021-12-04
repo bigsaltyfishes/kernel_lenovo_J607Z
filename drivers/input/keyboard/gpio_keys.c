@@ -60,7 +60,7 @@ struct gpio_keys_drvdata {
 	unsigned short *keymap;
 	struct gpio_button_data data[0];
 };
-
+int gpio_key_flag_forsar=2;
 /*
  * SYSFS interface for enabling/disabling keys and switches:
  *
@@ -378,6 +378,14 @@ static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 			input_event(input, type, button->code, button->value);
 	} else {
 		input_event(input, type, *bdata->code, state);
+		if(state==1){
+		pr_info("gpio key report event abov state is 1 gpio key flag is 1");
+		gpio_key_flag_forsar=1;
+		}
+		if(state==0){
+		pr_info("gpio key report event abov state is 0 gpio key flag  is 0");
+		gpio_key_flag_forsar=0;
+		}
 	}
 	input_sync(input);
 }

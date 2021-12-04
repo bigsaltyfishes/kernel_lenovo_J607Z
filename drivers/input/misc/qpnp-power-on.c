@@ -236,7 +236,8 @@ static struct qpnp_pon *sys_reset_dev;
 static struct qpnp_pon *modem_reset_dev;
 static DEFINE_SPINLOCK(spon_list_slock);
 static LIST_HEAD(spon_dev_list);
-
+int volume_down_flag_forsar=2;
+int power_flag_forsar=2;
 static u32 s1_delay[PON_S1_COUNT_MAX + 1] = {
 	0, 32, 56, 80, 138, 184, 272, 408, 608, 904, 1352, 2048, 3072, 4480,
 	6720, 10256
@@ -955,7 +956,7 @@ static int qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 		return -EINVAL;
 	}
 
-	pr_debug("PMIC input: code=%d, status=0x%02X\n", cfg->key_code,
+	pr_info("PMIC input: code=%d, status=0x%02X\n", cfg->key_code,
 		pon_rt_sts);
 	key_status = pon_rt_sts & pon_rt_bit;
 
@@ -971,11 +972,32 @@ static int qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 	if (!cfg->old_state && !key_status) {
 		input_report_key(pon->pon_input, cfg->key_code, 1);
 		input_sync(pon->pon_input);
+		pr_info("volume down key report event abov keycode 111111 114 \n");
 	}
 
 	input_report_key(pon->pon_input, cfg->key_code, key_status);
 	input_sync(pon->pon_input);
-
+	pr_info("volume down key report event abov keycode is %d key_status is %d \n", cfg->key_code,key_status);
+	if(cfg->key_code==114){
+		if(key_status==2){
+			volume_down_flag_forsar=1;
+			pr_info("114 1111 volume down key report event abov keycode is %d key_status is %d flag is 1\n", cfg->key_code,key_status);
+		}
+		if(key_status==0){
+			volume_down_flag_forsar=0;
+			pr_info("114 0000 volume down key report event abov keycode is %d key_status is %d  flag is 0\n", cfg->key_code,key_status);
+		}
+	}
+	if(cfg->key_code==116){
+		if(key_status==1){
+			power_flag_forsar=1;
+			pr_info("116 1111 power key report event abov keycode is %d key_status is %d flag is 1\n", cfg->key_code,key_status);
+		}
+		if(key_status==0){
+			power_flag_forsar=0;
+			pr_info("116 0000 power key report event abov keycode is %d key_status is %d  flag is 0\n", cfg->key_code,key_status);
+		}
+	}
 	cfg->old_state = !!key_status;
 
 	return 0;

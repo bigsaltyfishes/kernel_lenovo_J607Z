@@ -31,3 +31,5 @@ obj-$(CONFIG_INPUT_KEYRESET)	+= keyreset.o
 obj-$(CONFIG_INPUT_KEYCOMBO)	+= keycombo.o
 
 obj-$(CONFIG_RMI4_CORE)		+= rmi4/
+obj-$(CONFIG_INPUT_HALL_SENSOR)	+= jdm_sensors/hall/
+obj-$(CONFIG_ABOV_SAR_A96T375) += sar_abov/
