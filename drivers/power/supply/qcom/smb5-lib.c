@@ -20,7 +20,14 @@
 #include "step-chg-jeita.h"
 #include "storm-watch.h"
 #include "schgm-flash.h"
-
+#include <linux/gpio.h>
+#include <linux/of_gpio.h>
+#include <../../../usb/typec/ptn36502.h>
+//zhaos
+extern struct pinctrl *pinctrl;
+extern struct pinctrl_state *pinctrl_state1;
+extern struct pinctrl_state *pinctrl_state2;
+extern int hdmi_status;
 #define smblib_err(chg, fmt, ...)		\
 	pr_err("%s: %s: " fmt, chg->name,	\
 		__func__, ##__VA_ARGS__)	\
@@ -76,6 +83,16 @@ int smblib_masked_write(struct smb_charger *chg, u16 addr, u8 mask, u8 val)
 {
 	return regmap_update_bits(chg->regmap, addr, mask, val);
 }
+
+#ifdef POGO_SUPPORT
+void aicl_status_dump(struct smb_charger *chg)
+{
+	u8 buf[5];
+	smblib_batch_read(chg, ICL_MAX_STATUS_REG, buf, 5);
+	pr_info("AICL STATUS(%x): %x %x %x %x %x", ICL_MAX_STATUS_REG, 
+		buf[0], buf[1], buf[2], buf[3], buf[4]);
+}
+#endif
 
 int smblib_get_iio_channel(struct smb_charger *chg, const char *propname,
 					struct iio_channel **chan)
@@ -165,6 +182,10 @@ int smblib_icl_override(struct smb_charger *chg, enum icl_override_mode  mode)
 {
 	int rc;
 	u8 usb51_mode, icl_override, apsd_override;
+#ifdef POGO_SUPPORT
+	int pogo_path_state = gpio_get_value(chg->pogo_state_gpio) ? 0:1;
+	int usb_path_state = gpio_get_value(chg->usb_state_gpio) ? 0:1;
+#endif
 
 	switch (mode) {
 	case SW_OVERRIDE_USB51_MODE:
@@ -175,6 +196,17 @@ int smblib_icl_override(struct smb_charger *chg, enum icl_override_mode  mode)
 	case SW_OVERRIDE_HC_MODE:
 		usb51_mode = USBIN_MODE_CHG_BIT;
 		icl_override = 0;
+		#ifdef POGO_SUPPORT
+			if(pogo_path_state&&(chg->otg_en||usb_path_state==0)){
+				smblib_err(chg, "icl override \n");
+				icl_override=1;
+			}
+		#endif
+		apsd_override = ICL_OVERRIDE_AFTER_APSD_BIT;
+		break;
+	case SW_OVERRIDE_NO_CC_MODE:
+		usb51_mode = USBIN_MODE_CHG_BIT;
+		icl_override = 1;
 		apsd_override = ICL_OVERRIDE_AFTER_APSD_BIT;
 		break;
 	case HW_AUTO_MODE:
@@ -481,6 +513,9 @@ enum {
 	FLOAT,
 	HVDCP2,
 	HVDCP3,
+#ifdef POGO_SUPPORT
+	POGO,
+#endif
 	MAX_TYPES
 };
 
@@ -525,6 +560,13 @@ static const struct apsd_result smblib_apsd_results[] = {
 		.bit	= DCP_CHARGER_BIT | QC_3P0_BIT,
 		.pst	= POWER_SUPPLY_TYPE_USB_HVDCP_3,
 	},
+#ifdef POGO_SUPPORT
+	[POGO] = {
+		.name	= "POGO",
+		.bit	= APSD_RESULT_STATUS_7_BIT | SDP_CHARGER_BIT,
+		.pst	= POWER_SUPPLY_TYPE_POGO
+	},
+#endif
 };
 
 static const struct apsd_result *smblib_get_apsd_result(struct smb_charger *chg)
@@ -532,6 +574,11 @@ static const struct apsd_result *smblib_get_apsd_result(struct smb_charger *chg)
 	int rc, i;
 	u8 apsd_stat, stat;
 	const struct apsd_result *result = &smblib_apsd_results[UNKNOWN];
+
+#ifdef POGO_SUPPORT
+	int usb_path_state = gpio_get_value(chg->usb_state_gpio) ? 0:1;
+	int pogo_path_state = gpio_get_value(chg->pogo_state_gpio) ? 0:1;
+#endif
 
 	rc = smblib_read(chg, APSD_STATUS_REG, &apsd_stat);
 	if (rc < 0) {
@@ -561,6 +608,21 @@ static const struct apsd_result *smblib_get_apsd_result(struct smb_charger *chg)
 		if (result != &smblib_apsd_results[HVDCP3])
 			result = &smblib_apsd_results[HVDCP2];
 	}
+
+#ifdef POGO_SUPPORT
+	//if ((result->bit == SDP_CHARGER_BIT || result->bit == CDP_CHARGER_BIT) && (usb_path_state == 0) && (pogo_path_state == 1))
+	if (pogo_path_state == 1){
+			if(usb_path_state==0||chg->otg_en)
+			result = &smblib_apsd_results[POGO];
+			else if(chg->last_time_otg_en){
+				result = &smblib_apsd_results[POGO];
+				chg->last_time_otg_en=0;
+			}
+				
+			smblib_dbg(chg, PR_REGISTER, "pogo,usb,otg state: %d,%d,%d\n", pogo_path_state,usb_path_state,chg->otg_en);
+	}
+
+#endif
 
 	return result;
 }
@@ -955,6 +1017,22 @@ int smblib_get_prop_from_bms(struct smb_charger *chg,
 	return rc;
 }
 
+int smblib_get_prop_from_bq27541(struct smb_charger *chg,
+				enum power_supply_property psp,
+				union power_supply_propval *val)
+{
+	int rc;
+
+	if (!chg->bq27541_psy){
+		printk("smblib_get_prop_from_bq27541 !chg->bq27541_psy!!!!!\n");
+		return -EINVAL;
+	}
+
+	rc = power_supply_get_property(chg->bq27541_psy, psp, val);
+
+	return rc;
+}
+
 void smblib_apsd_enable(struct smb_charger *chg, bool enable)
 {
 	int rc;
@@ -1100,8 +1178,8 @@ static const struct apsd_result *smblib_update_usb_type(struct smb_charger *chg)
 			chg->real_charger_type = apsd_result->pst;
 	}
 
-	smblib_dbg(chg, PR_MISC, "APSD=%s PD=%d QC3P5=%d\n",
-			apsd_result->name, chg->pd_active, chg->qc3p5_detected);
+	smblib_dbg(chg, PR_MISC, "real_charger_type=%d APSD=%s PD=%d QC3P5=%d\n",
+			chg->real_charger_type, apsd_result->name, chg->pd_active, chg->qc3p5_detected);
 	return apsd_result;
 }
 
@@ -1349,6 +1427,7 @@ static int smblib_get_pulse_cnt(struct smb_charger *chg, int *count)
 #define USBIN_100MA	100000
 #define USBIN_150MA	150000
 #define USBIN_500MA	500000
+#define USBIN_450MA	450000
 #define USBIN_900MA	900000
 #define USBIN_1000MA	1000000
 static int set_sdp_current(struct smb_charger *chg, int icl_ua)
@@ -1356,7 +1435,8 @@ static int set_sdp_current(struct smb_charger *chg, int icl_ua)
 	int rc;
 	u8 icl_options;
 	const struct apsd_result *apsd_result = smblib_get_apsd_result(chg);
-
+	smblib_err(chg, "chg->real_charger_type=%d and chg->connector_type = %d\n", chg->real_charger_type, chg->connector_type);
+	
 	/* power source is SDP */
 	switch (icl_ua) {
 	case USBIN_100MA:
@@ -1410,27 +1490,89 @@ static int set_sdp_current(struct smb_charger *chg, int icl_ua)
 	return rc;
 }
 
+static int pogo_reset_aicl_flag = 0;
 int smblib_set_icl_current(struct smb_charger *chg, int icl_ua)
 {
 	int rc = 0;
 	enum icl_override_mode icl_override = HW_AUTO_MODE;
 	/* suspend if 25mA or less is requested */
 	bool suspend = (icl_ua <= USBIN_25MA);
+	union power_supply_propval pval = {0, };
+#ifdef POGO_SUPPORT
+	int usb_path_state, pogo_path_state;
+#endif
+	rc = smblib_get_prop_usb_present(chg, &pval);
+	 if (rc < 0) {
+		smblib_err(chg, "Couldn't get usb present prop rc = %d\n", rc);
+		goto out;
+	 }
 
+      //dump_stack();
+#ifdef POGO_SUPPORT
+	usb_path_state = gpio_get_value(chg->usb_state_gpio) ? 0:1;
+	pogo_path_state = gpio_get_value(chg->pogo_state_gpio) ? 0:1;
+	if ((pogo_path_state == 1) && (icl_ua < POGO_CURRENT_UA)) {
+		/*
+		pogo charge is in:
+
+		  #T-HUB exist: usb_path_state is true, pval.intval is false, otg_en is true => pogo charging,
+		    a. usb plug in thub ,then pval.intval is true;usb_path_state is true; => usb charging
+		      usb unplug=> pogo charging
+		    b. if otg plug in thub, then chg->otg_en is true         =>pogo charging
+
+		  #normal otg exist: chg->otg_en is true => pogo charging
+		  #usb present: pval.intval is true, usb_path_state is true => usb charging
+		   usb unplug, pogo charging
+		*/
+		if((pval.intval==0)||chg->otg_en||(usb_path_state ==0)){
+			icl_ua = POGO_CURRENT_UA;
+			smblib_update_usb_type(chg);
+		}
+		if(suspend)
+			suspend = false;
+		//smblib_err(chg, "usb, pogo,otg path status=%d, %d, %d\n", usb_path_state, pogo_path_state,chg->otg_en);
+		//smblib_err(chg, "usb real status= %d\n", pval.intval);
+	}
+#endif
+
+	smblib_err(chg, "usb, pogo,otg path status=%d, %d, %d\n", usb_path_state, pogo_path_state,chg->otg_en);
+	smblib_err(chg, "usb real status= %d\n", pval.intval);
+
+
+	smblib_err(chg, "icl_ua=%d and suspend = %d\n", icl_ua, suspend);
+	smblib_err(chg, "chg->real_charger_type=%d and chg->connector_type = %d\n", chg->real_charger_type, chg->connector_type);
+	smblib_err(chg, "chg->typec_legacy=%d and chg->typec_mode = %d\n", chg->typec_legacy, chg->typec_mode);
 	if (chg->chg_param.smb_version == PMI632_SUBTYPE)
 		schgm_flash_torch_priority(chg, suspend ? TORCH_BOOST_MODE :
 					TORCH_BUCK_MODE);
 
 	/* Do not configure ICL from SW for DAM cables */
 	if (smblib_get_prop_typec_mode(chg) ==
-			    POWER_SUPPLY_TYPEC_SINK_DEBUG_ACCESSORY)
+			    POWER_SUPPLY_TYPEC_SINK_DEBUG_ACCESSORY) {
+		smblib_err(chg, "smblib_get_prop_typec_mode is POWER_SUPPLY_TYPEC_SINK_DEBUG_ACCESSORY\n");	    
 		return 0;
+	}
 
 	if (suspend)
 		return smblib_set_usb_suspend(chg, true);
 
 	if (icl_ua == INT_MAX)
 		goto set_mode;
+
+	rc = smblib_get_prop_usb_present(chg, &pval);
+	if (rc < 0) {
+		smblib_err(chg, "Couldn't get usb present prop rc = %d\n", rc);
+		goto out;
+	}
+
+	if (((chg->typec_mode == POWER_SUPPLY_TYPEC_NONE &&
+		chg->real_charger_type >= POWER_SUPPLY_TYPE_USB) || 
+		((chg->real_charger_type == POWER_SUPPLY_TYPE_UNKNOWN) && 
+		(usb_path_state == 0) && (pogo_path_state == 1))) && pval.intval == true) {
+		rc = smblib_set_charge_param(chg, &chg->param.usb_icl, icl_ua);
+		icl_override = SW_OVERRIDE_NO_CC_MODE;
+		goto set_mode;
+	}
 
 	/* configure current */
 	if (chg->real_charger_type == POWER_SUPPLY_TYPE_USB
@@ -1478,8 +1620,20 @@ unsuspend:
 	}
 
 	/* Re-run AICL */
+#ifdef POGO_SUPPORT
+	if(chg->real_charger_type == POWER_SUPPLY_TYPE_POGO && (pogo_reset_aicl_flag == 0)) {
+		rc = smblib_run_aicl(chg, RESTART_AICL);
+		pogo_reset_aicl_flag = 1;
+	} else {
+		if (icl_override != SW_OVERRIDE_HC_MODE) {
+			rc = smblib_run_aicl(chg, RERUN_AICL);
+		}
+	}
+#else
 	if (icl_override != SW_OVERRIDE_HC_MODE)
 		rc = smblib_run_aicl(chg, RERUN_AICL);
+#endif
+
 out:
 	return rc;
 }
@@ -1860,8 +2014,16 @@ int smblib_vconn_regulator_is_enabled(struct regulator_dev *rdev)
 int smblib_vbus_regulator_enable(struct regulator_dev *rdev)
 {
 	struct smb_charger *chg = rdev_get_drvdata(rdev);
-	int rc;
 
+#ifdef POGO_SUPPORT
+	smblib_dbg(chg, PR_OTG, "disabling pogo path, and enabling OTG\n");
+	if(pinctrl_select_state(pinctrl,pinctrl_state1))
+		printk("%s:pinctrl_select_state[1] func Failed.ztoh\n",__func__);
+	chg->otg_en=gpio_get_value(chg->otg_en_gpio);
+	printk("otg on,otg_en status:%d ",gpio_get_value(chg->otg_en_gpio));
+	chg->last_time_otg_en=chg->otg_en;
+
+#else
 	smblib_dbg(chg, PR_OTG, "enabling OTG\n");
 
 	rc = smblib_masked_write(chg, DCDC_CMD_OTG_REG, OTG_EN_BIT, OTG_EN_BIT);
@@ -1869,6 +2031,7 @@ int smblib_vbus_regulator_enable(struct regulator_dev *rdev)
 		smblib_err(chg, "Couldn't enable OTG rc=%d\n", rc);
 		return rc;
 	}
+#endif
 
 	return 0;
 }
@@ -1876,8 +2039,15 @@ int smblib_vbus_regulator_enable(struct regulator_dev *rdev)
 int smblib_vbus_regulator_disable(struct regulator_dev *rdev)
 {
 	struct smb_charger *chg = rdev_get_drvdata(rdev);
-	int rc;
 
+#ifdef POGO_SUPPORT
+	smblib_dbg(chg, PR_OTG, "disabling OTG, and enabling pogo path\n");
+	if(pinctrl_select_state(pinctrl,pinctrl_state2))
+		printk("%s:pinctrl_select_state[2] func Failed.ztoh\n",__func__);
+	chg->otg_en=gpio_get_value(chg->otg_en_gpio);
+	printk("otg off,otg_en status:%d ",gpio_get_value(chg->otg_en_gpio));
+
+#else
 	smblib_dbg(chg, PR_OTG, "disabling OTG\n");
 
 	rc = smblib_masked_write(chg, DCDC_CMD_OTG_REG, OTG_EN_BIT, 0);
@@ -1885,6 +2055,7 @@ int smblib_vbus_regulator_disable(struct regulator_dev *rdev)
 		smblib_err(chg, "Couldn't disable OTG regulator rc=%d\n", rc);
 		return rc;
 	}
+#endif
 
 	return 0;
 }
@@ -1892,7 +2063,7 @@ int smblib_vbus_regulator_disable(struct regulator_dev *rdev)
 int smblib_vbus_regulator_is_enabled(struct regulator_dev *rdev)
 {
 	struct smb_charger *chg = rdev_get_drvdata(rdev);
-	int rc = 0;
+	/*int rc = 0;
 	u8 cmd;
 
 	rc = smblib_read(chg, DCDC_CMD_OTG_REG, &cmd);
@@ -1901,7 +2072,8 @@ int smblib_vbus_regulator_is_enabled(struct regulator_dev *rdev)
 		return rc;
 	}
 
-	return (cmd & OTG_EN_BIT) ? 1 : 0;
+	return (cmd & OTG_EN_BIT) ? 1 : 0;*/
+	return chg->otg_en;
 }
 
 /********************
@@ -1914,6 +2086,7 @@ int smblib_get_prop_input_suspend(struct smb_charger *chg,
 	val->intval
 		= (get_client_vote(chg->usb_icl_votable, USER_VOTER) == 0)
 		 && get_client_vote(chg->dc_suspend_votable, USER_VOTER);
+	pr_err("longcheer,%s:get input_suspend =%d\n", __func__,val->intval);
 	return 0;
 }
 
@@ -2079,6 +2252,7 @@ int smblib_get_prop_batt_status(struct smb_charger *chg,
 			val->intval = POWER_SUPPLY_STATUS_FULL;
 			break;
 		default:
+			smblib_err(chg, "real_charger_type = %d usb_online = %d typec_mode = %d\n", chg->real_charger_type,usb_online,chg->typec_mode);
 			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
 			break;
 		}
@@ -2237,6 +2411,7 @@ int smblib_get_prop_system_temp_level(struct smb_charger *chg,
 				union power_supply_propval *val)
 {
 	val->intval = chg->system_temp_level;
+	smblib_err(chg, "chg->system_temp_level is =%d\n", val->intval);
 	return 0;
 }
 
@@ -2360,6 +2535,7 @@ int smblib_set_prop_input_suspend(struct smb_charger *chg,
 			(bool)val->intval ? "suspend" : "resume", rc);
 		return rc;
 	}
+	pr_err("longcheer,%s:usb_set input_suspend =%d\n", __func__,(bool)val->intval);
 
 	rc = vote(chg->dc_suspend_votable, USER_VOTER, (bool)val->intval, 0);
 	if (rc < 0) {
@@ -2367,7 +2543,7 @@ int smblib_set_prop_input_suspend(struct smb_charger *chg,
 			(bool)val->intval ? "suspend" : "resume", rc);
 		return rc;
 	}
-
+	pr_err("longcheer,%s:dc_set input_suspend =%d\n", __func__,(bool)val->intval);
 	power_supply_changed(chg->batt_psy);
 	return rc;
 }
@@ -2401,7 +2577,7 @@ int smblib_set_prop_system_temp_level(struct smb_charger *chg,
 {
 	if (val->intval < 0)
 		return -EINVAL;
-
+        smblib_err(chg, "chg->thermal_levels is =%d\n", chg->thermal_levels);
 	if (chg->thermal_levels <= 0)
 		return -EINVAL;
 
@@ -2409,7 +2585,8 @@ int smblib_set_prop_system_temp_level(struct smb_charger *chg,
 		return -EINVAL;
 
 	chg->system_temp_level = val->intval;
-
+        dump_stack();
+        smblib_err(chg, "chg->system_temp_level is =%d\n", chg->system_temp_level);
 	if (chg->system_temp_level == chg->thermal_levels)
 		return vote(chg->chg_disable_votable,
 			THERMAL_DAEMON_VOTER, true, 0);
@@ -2417,7 +2594,8 @@ int smblib_set_prop_system_temp_level(struct smb_charger *chg,
 	vote(chg->chg_disable_votable, THERMAL_DAEMON_VOTER, false, 0);
 	if (chg->system_temp_level == 0)
 		return vote(chg->fcc_votable, THERMAL_DAEMON_VOTER, false, 0);
-
+        smblib_err(chg, "going to vote chg thermal mitigation is =%d with system temp level is =%d\n", chg->thermal_mitigation[chg->system_temp_level], 
+                                chg->system_temp_level);
 	vote(chg->fcc_votable, THERMAL_DAEMON_VOTER, true,
 			chg->thermal_mitigation[chg->system_temp_level]);
 	return 0;
@@ -2465,7 +2643,11 @@ int smblib_run_aicl(struct smb_charger *chg, int type)
 	if (stat & USBIN_SUSPEND_STS_BIT)
 		return rc;
 
+#ifdef POGO_SUPPORT
+	smblib_err(chg, "%s AICL\n", (type == RERUN_AICL) ? "re-running" : "re-starting");
+#else
 	smblib_dbg(chg, PR_MISC, "re-running AICL\n");
+#endif
 
 	stat = (type == RERUN_AICL) ? RERUN_AICL_BIT : RESTART_AICL_BIT;
 	rc = smblib_masked_write(chg, AICL_CMD_REG, stat, stat);
@@ -3643,6 +3825,7 @@ int smblib_get_prop_charger_temp(struct smb_charger *chg,
 	return rc;
 }
 
+int typec_cc_orientation = 0;
 int smblib_get_prop_typec_cc_orientation(struct smb_charger *chg,
 					 union power_supply_propval *val)
 {
@@ -3661,8 +3844,11 @@ int smblib_get_prop_typec_cc_orientation(struct smb_charger *chg,
 	}
 	smblib_dbg(chg, PR_REGISTER, "TYPE_C_STATUS_4 = 0x%02x\n", stat);
 
-	if (stat & CC_ATTACHED_BIT)
+	if (stat & CC_ATTACHED_BIT) {
 		val->intval = (bool)(stat & CC_ORIENTATION_BIT) + 1;
+		typec_cc_orientation = val->intval;
+		printk("%s,typec_cc_orientation = val->intavl = %d\n",__func__,typec_cc_orientation);
+	}
 
 	return rc;
 }
@@ -3759,8 +3945,9 @@ static int smblib_get_prop_typec_mode(struct smb_charger *chg)
 
 	if (stat & SNK_SRC_MODE_BIT)
 		return smblib_get_prop_dfp_mode(chg);
-	else
+	else{
 		return smblib_get_prop_ufp_mode(chg);
+	}
 }
 
 inline int smblib_get_usb_prop_typec_mode(struct smb_charger *chg,
@@ -4217,6 +4404,9 @@ static int get_rp_based_dcp_current(struct smb_charger *chg, int typec_mode)
 	int rp_ua;
 
 	switch (typec_mode) {
+	case POWER_SUPPLY_TYPEC_NONE:
+		rp_ua =SDP_CURRENT_UA;
+		break;
 	case POWER_SUPPLY_TYPEC_SOURCE_HIGH:
 		rp_ua = TYPEC_HIGH_CURRENT_UA;
 		break;
@@ -4256,7 +4446,8 @@ static int smblib_handle_usb_current(struct smb_charger *chg,
 {
 	int rc = 0, rp_ua, typec_mode;
 	union power_supply_propval val = {0, };
-
+	smblib_err(chg, "chg->real_charger_type = %d and handle usb current = %d\n",
+						chg->real_charger_type,usb_current);
 	if (chg->real_charger_type == POWER_SUPPLY_TYPE_USB_FLOAT) {
 		if (usb_current == -ETIMEDOUT) {
 			if ((chg->float_cfg & FLOAT_OPTIONS_MASK)
@@ -4266,7 +4457,7 @@ static int smblib_handle_usb_current(struct smb_charger *chg,
 				 * configured for SDP mode.
 				 */
 				rc = vote(chg->usb_icl_votable,
-					SW_ICL_MAX_VOTER, true, USBIN_500MA);
+					SW_ICL_MAX_VOTER, true, USBIN_450MA);
 				if (rc < 0)
 					smblib_err(chg,
 						"Couldn't set SDP ICL rc=%d\n",
@@ -5012,6 +5203,12 @@ irqreturn_t default_irq_handler(int irq, void *data)
 	struct smb_charger *chg = irq_data->parent_data;
 
 	smblib_dbg(chg, PR_INTERRUPT, "IRQ: %s\n", irq_data->name);
+
+#ifdef POGO_DEBUG
+	if(strcmp(irq_data->name, "aicl-done") == 0)
+		aicl_status_dump(chg);
+#endif
+
 	return IRQ_HANDLED;
 }
 
@@ -5170,8 +5367,39 @@ irqreturn_t usbin_uv_irq_handler(int irq, void *data)
 	const struct apsd_result *apsd = smblib_get_apsd_result(chg);
 	int rc;
 	u8 stat = 0, max_pulses = 0;
-
+#ifdef POGO_SUPPORT
+	int usb_path_state, pogo_path_state;
+#endif
 	smblib_dbg(chg, PR_INTERRUPT, "IRQ: %s\n", irq_data->name);
+
+#ifdef POGO_SUPPORT
+	usb_path_state = gpio_get_value(chg->usb_state_gpio) ? 0:1;
+	pogo_path_state = gpio_get_value(chg->pogo_state_gpio) ? 0:1;
+	smblib_err(chg, "usb, pogo,otg path status=%d, %d, %d\n", usb_path_state, pogo_path_state,chg->otg_en);
+	if ((chg->otg_en||(usb_path_state == 0))&&pogo_path_state == 1) {
+		chg->hvdcp_disable = true;
+		smblib_hvdcp_detect_enable(chg, false);
+		chg->chg_freq.freq_5V = 1050;
+		smblib_set_opt_switcher_freq(chg, chg->chg_freq.freq_5V);
+
+		vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, true, 2000000);
+#if 0
+		/* enable 5v to 9v charger ovp for pogo charger */
+		rc = smblib_masked_write(chg, USBIN_ADAPTER_ALLOW_CFG_REG,
+                                         USBIN_ADAPTER_ALLOW_MASK,
+                                         USBIN_ADAPTER_ALLOW_5V_TO_9V);
+		if (rc < 0) {
+			dev_err(chg->dev, "Failed to set usbin apapter\n", rc);
+		}
+#endif
+	} else {
+		pogo_reset_aicl_flag = 0;
+		if (chg->hvdcp_disable) {
+			chg->hvdcp_disable = false;
+			smblib_hvdcp_detect_enable(chg, true);
+		}
+	}
+#endif
 
 	if ((chg->wa_flags & WEAK_ADAPTER_WA)
 			&& is_storming(&irq_data->storm_data)) {
@@ -5347,6 +5575,41 @@ irqreturn_t icl_change_irq_handler(int irq, void *data)
 
 	return IRQ_HANDLED;
 }
+static void smblib_cc_un_compliant_charge_work(struct work_struct *work)
+{
+	union power_supply_propval val = {0, };
+	int rc, usb_present = 0;
+
+	struct smb_charger *chg = container_of(work, struct smb_charger,
+					cc_un_compliant_charge_work.work);
+
+	rc = smblib_get_prop_usb_present(chg, &val);
+	if (rc < 0) {
+		smblib_err(chg, "Couldn't get usb present rc = %d\n", rc);
+		return;
+	}
+
+	usb_present = val.intval;
+	/*
+	 * if CC pin of C to A cable is not connected to the receptacle
+	 * or CC pin is bad or short to VBUS or C to C cable CC line is float,
+	 * disable APSD CC trigger since pm8150b CC protection voltage
+	 * threshold is very high (22V), our wire charging maxium charging
+	 * vbus is below 13.2V.
+	 */
+	if (usb_present
+			&& (chg->typec_mode == POWER_SUPPLY_TYPEC_NONE ||
+				chg->typec_mode == POWER_SUPPLY_TYPEC_NON_COMPLIANT)
+			&& (chg->cc_un_compliant_detected == false)) {
+		vote( chg->usb_icl_votable, CC_UN_COMPLIANT_VOTER, true, 500000);
+		vote( chg->fcc_votable, CC_UN_COMPLIANT_VOTER, true, 500000);
+		pr_err("CC uncompliant, set icl = 500mA\n");
+		chg->cc_un_compliant_detected = true;
+		//smblib_apsd_enable(chg, true);
+		smblib_hvdcp_detect_enable(chg, true);
+		smblib_rerun_apsd_if_required(chg);
+	}
+}
 
 static int smblib_role_switch_failure(struct smb_charger *chg)
 {
@@ -5513,7 +5776,9 @@ void smblib_usb_plugin_locked(struct smb_charger *chg)
 	bool vbus_rising;
 	struct smb_irq_data *data;
 	struct storm_watch *wdata;
-
+#ifdef POGO_SUPPORT
+	int usb_path_state, pogo_path_state;
+#endif
 	rc = smblib_read(chg, USBIN_BASE + INT_RT_STS_OFFSET, &stat);
 	if (rc < 0) {
 		smblib_err(chg, "Couldn't read USB_INT_RT_STS rc=%d\n", rc);
@@ -5521,6 +5786,42 @@ void smblib_usb_plugin_locked(struct smb_charger *chg)
 	}
 
 	vbus_rising = (bool)(stat & USBIN_PLUGIN_RT_STS_BIT);
+
+#ifdef POGO_SUPPORT
+	usb_path_state = gpio_get_value(chg->usb_state_gpio) ? 0:1;
+	pogo_path_state = gpio_get_value(chg->pogo_state_gpio) ? 0:1;
+	smblib_err(chg, "usb, pogo,otg path status=%d, %d, %d\n", usb_path_state, pogo_path_state,chg->otg_en);
+	if (((chg->otg_en)||(usb_path_state == 0))&&pogo_path_state == 1) {
+		chg->chg_freq.freq_5V = 1050;
+		if (vbus_rising) {
+			vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, true,
+					POGO_CURRENT_UA);
+#if 0
+			/* enable 5v to 9v charger ovp for pogo charger */
+			rc = smblib_masked_write(chg, USBIN_ADAPTER_ALLOW_CFG_REG,
+                                         USBIN_ADAPTER_ALLOW_MASK,
+                                         USBIN_ADAPTER_ALLOW_5V_TO_9V);
+			if (rc < 0) {
+                     	dev_err(chg->dev, "Failed to set usbin apapter\n", rc);
+			}
+#endif
+		}
+	} else {
+#if 0
+		if (vbus_rising) {
+			/* enable 5v to 12v charger ovp for usb charger */
+			rc = smblib_masked_write(chg, USBIN_ADAPTER_ALLOW_CFG_REG,
+                                         USBIN_ADAPTER_ALLOW_MASK,
+                                         USBIN_ADAPTER_ALLOW_5V_TO_12V);
+			if (rc < 0) {
+              	dev_err(chg->dev, "Failed to set usbin apapter\n", rc);
+			}
+		}
+#endif
+		chg->chg_freq.freq_5V = 600;
+	}
+#endif
+
 	smblib_set_opt_switcher_freq(chg, vbus_rising ? chg->chg_freq.freq_5V :
 						chg->chg_freq.freq_removal);
 
@@ -5545,6 +5846,10 @@ void smblib_usb_plugin_locked(struct smb_charger *chg)
 		vote(chg->awake_votable, PL_DELAY_VOTER, true, 0);
 		schedule_delayed_work(&chg->pl_enable_work,
 					msecs_to_jiffies(PL_DELAY_MS));
+		schedule_delayed_work(&chg->charger_type_recheck,
+					msecs_to_jiffies(CHARGER_RECHECK_DELAY_MS));
+		schedule_delayed_work(&chg->cc_un_compliant_charge_work,
+					msecs_to_jiffies(CC_UN_COMPLIANT_START_DELAY_MS));
 	} else {
 		/* Disable SW Thermal Regulation */
 		rc = smblib_set_sw_thermal_regulation(chg, false);
@@ -5597,11 +5902,15 @@ void smblib_usb_plugin_locked(struct smb_charger *chg)
 					false, 0);
 		}
 
-		rc = smblib_request_dpdm(chg, false);
+		/*rc = smblib_request_dpdm(chg, false);
 		if (rc < 0)
-			smblib_err(chg, "Couldn't disable DPDM rc=%d\n", rc);
+			smblib_err(chg, "Couldn't disable DPDM rc=%d\n", rc);*/
 
 		smblib_update_usb_type(chg);
+
+		 if (chg->use_extcon)
+			smblib_notify_device_mode(chg, false);
+		  vote(chg->usb_icl_votable, USB_PSY_VOTER, false, 0); //remove USB_PSY voting when plugin detach
 	}
 
 	if (chg->connector_type == POWER_SUPPLY_CONNECTOR_MICRO_USB)
@@ -5767,8 +6076,7 @@ static void update_sw_icl_max(struct smb_charger *chg, int pst)
 						USB_PSY_VOTER)) {
 			/* if flash is active force 500mA */
 			vote(chg->usb_icl_votable, USB_PSY_VOTER, true,
-					is_flash_active(chg) ?
-					SDP_CURRENT_UA : SDP_100_MA);
+					SDP_CURRENT_UA);
 		}
 		vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, false, 0);
 		break;
@@ -5785,9 +6093,19 @@ static void update_sw_icl_max(struct smb_charger *chg, int pst)
 		 * limit ICL to 100mA, the USB driver will enumerate to check
 		 * if this is a SDP and appropriately set the current
 		 */
-		vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, true,
-					SDP_100_MA);
+		if(chg->is_float_recheck)
+			vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, true,
+					FLOAT_CURRENT_UA);
+		else
+			vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, true,
+					SDP_CURRENT_UA);
 		break;
+#ifdef POGO_SUPPORT
+	case POWER_SUPPLY_TYPE_POGO:
+		vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, true,
+					POGO_CURRENT_UA);
+		break;
+#endif
 	case POWER_SUPPLY_TYPE_UNKNOWN:
 	default:
 		vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, true,
@@ -6134,6 +6452,9 @@ static void smblib_typec_role_check_work(struct work_struct *work)
 
 	mutex_lock(&chg->typec_lock);
 
+	smblib_dbg(chg, PR_MISC, "dr_mode:0x%x",chg->dr_mode);
+	smblib_dbg(chg, PR_MISC, "ctypec_mode:0x%x",chg->typec_mode);
+
 	switch (chg->dr_mode) {
 	case TYPEC_PORT_SNK:
 		if (chg->typec_mode < POWER_SUPPLY_TYPEC_SOURCE_DEFAULT) {
@@ -6268,6 +6589,7 @@ static void typec_src_removal(struct smb_charger *chg)
 	cancel_delayed_work_sync(&chg->usbov_dbc_work);
 	vote(chg->awake_votable, USBOV_DBC_VOTER, false, 0);
 	chg->dbc_usbov = false;
+	chg->is_float_recheck = false;
 
 	chg->pulse_cnt = 0;
 	chg->usb_icl_delta_ua = 0;
@@ -6407,7 +6729,20 @@ irqreturn_t typec_or_rid_detection_change_irq_handler(int irq, void *data)
 	struct smb_irq_data *irq_data = data;
 	struct smb_charger *chg = irq_data->parent_data;
 
+	int pogoFlag = gpio_get_value(chg->pogo_state_gpio) ? 0:1;
+
 	smblib_dbg(chg, PR_INTERRUPT, "IRQ: %s\n", irq_data->name);
+
+	smblib_err(chg,"%s:pogo state is :[%s]\n",__func__,pogoFlag ? "on":"off");
+	if (pogoFlag) {
+		gpio_direction_output(chg->otg_en1_gpio,1);
+		msleep(1000);
+		smblib_err(chg,"%s:output high && delay 1s ==> otg_en1_gpio:[%d]\n",__func__,gpio_get_value(chg->otg_en1_gpio));
+		gpio_direction_output(chg->otg_en1_gpio,0);
+		chg->real_charger_type = POWER_SUPPLY_TYPE_POGO;
+		pogo_reset_aicl_flag=0;
+		smblib_set_icl_current(chg,POGO_CURRENT_UA);
+	}
 
 	if (chg->connector_type == POWER_SUPPLY_CONNECTOR_MICRO_USB) {
 		if (chg->uusb_moisture_protection_enabled) {
@@ -6482,16 +6817,19 @@ static void smblib_lpd_clear_ra_open_work(struct smb_charger *chg)
 	cancel_delayed_work_sync(&chg->lpd_ra_open_work);
 	vote(chg->awake_votable, LPD_VOTER, false, 0);
 }
-
+unsigned int ptncor = 0;
 #define TYPEC_DETACH_DETECT_DELAY_MS 2000
 irqreturn_t typec_attach_detach_irq_handler(int irq, void *data)
 {
 	struct smb_irq_data *irq_data = data;
 	struct smb_charger *chg = irq_data->parent_data;
+	union power_supply_propval val;
 	u8 stat;
 	bool attached = false;
 	int rc;
 
+	smblib_get_prop_typec_cc_orientation(chg, &val);
+	printk("%s,val.intval:%d.\n",__func__,val.intval);
 	/* IRQ not expected to be executed for uUSB, return */
 	if (chg->connector_type == POWER_SUPPLY_CONNECTOR_MICRO_USB)
 		return IRQ_HANDLED;
@@ -6507,6 +6845,21 @@ irqreturn_t typec_attach_detach_irq_handler(int irq, void *data)
 
 	attached = !!(stat & TYPEC_ATTACH_DETACH_STATE_BIT);
 
+	smblib_dbg(chg, PR_INTERRUPT, "attached: %d\n", attached);
+
+	ptncor = val.intval;
+	/*set redriver mode*/
+	if (!hdmi_status) {
+
+		if (attached) {
+			set_ptn36502_usp_3p0_only_mode(val.intval);
+			printk("%s:ATTACHED,Set usb 3.0 only mode.\n",__func__);
+		} else {
+			set_ptn36502_safe_state_mode();
+			printk("%s:UNATTACHED,Set usb safe mode.\n",__func__);
+		}
+
+	}
 	if (attached) {
 		smblib_lpd_clear_ra_open_work(chg);
 
@@ -6536,6 +6889,7 @@ irqreturn_t typec_attach_detach_irq_handler(int irq, void *data)
 			smblib_err(chg, "failed to register partner rc =%d\n",
 					rc);
 	} else {
+		smblib_dbg(chg, PR_INTERRUPT, "sink_src_mode:%d\n", chg->sink_src_mode);
 		switch (chg->sink_src_mode) {
 		case SRC_MODE:
 			typec_sink_removal(chg);
@@ -7205,9 +7559,9 @@ static void smblib_pr_swap_detach_work(struct work_struct *work)
 	}
 	smblib_dbg(chg, PR_REGISTER, "STATE_MACHINE_STS %x\n", stat);
 	if (!(stat & TYPEC_ATTACH_DETACH_STATE_BIT)) {
-		rc = smblib_request_dpdm(chg, false);
+		/*rc = smblib_request_dpdm(chg, false);
 		if (rc < 0)
-			smblib_err(chg, "Couldn't disable DPDM rc=%d\n", rc);
+			smblib_err(chg, "Couldn't disable DPDM rc=%d\n", rc);*/
 
 		if (chg->typec_port)
 			typec_partner_unregister(chg);
@@ -7221,15 +7575,24 @@ static void smblib_uusb_otg_work(struct work_struct *work)
 	struct smb_charger *chg = container_of(work, struct smb_charger,
 						uusb_otg_work.work);
 	int rc;
-	u8 stat;
-	bool otg;
+	u8 stat = 0;
+	bool otg = 0;
+
+#ifdef POGO_SUPPORT
+	if(chg->power_off_mode == 1)
+		goto out;
+#endif
 
 	rc = smblib_read(chg, TYPEC_U_USB_STATUS_REG, &stat);
 	if (rc < 0) {
 		smblib_err(chg, "Couldn't read TYPE_C_STATUS_3 rc=%d\n", rc);
 		goto out;
 	}
+#ifdef POGO_SUPPORT
+	otg = !!((stat & U_USB_GROUND_NOVBUS_BIT) || (stat & U_USB_GROUND_BIT));
+#else
 	otg = !!(stat & U_USB_GROUND_NOVBUS_BIT);
+#endif
 	if (chg->otg_present != otg) {
 		if (otg) {
 			/* otg cable inserted */
@@ -7649,8 +8012,10 @@ static void jeita_update_work(struct work_struct *work)
 	}
 
 	/* if BMS hasn't read out the batt_id yet, defer the work */
-	if (val.intval <= 0)
+	if (val.intval <= 0) {
+		smblib_err(chg, "BMS hasn't read out the batt_id yet for val.intval <= 0\n");
 		return;
+	}
 
 	pnode = of_batterydata_get_best_profile(batt_node,
 					val.intval / 1000, NULL);
@@ -7876,6 +8241,77 @@ static void smblib_lpd_detach_work(struct work_struct *work)
 		chg->lpd_stage = LPD_STAGE_NONE;
 }
 
+static void smblib_charger_type_recheck(struct work_struct *work)
+{
+	struct smb_charger *chg = container_of(work, struct smb_charger,
+			charger_type_recheck.work);
+	int recheck_time = TYPE_RECHECK_TIME_5S;
+	static int last_charger_type, check_count;
+	int rc;
+
+	smblib_update_usb_type(chg);
+	smblib_dbg(chg, PR_OEM, "typec_mode:%d,last:%d: real charger type:%d\n",
+			chg->typec_mode, last_charger_type, chg->real_charger_type);
+
+	if (last_charger_type != chg->real_charger_type)
+		check_count--;
+	last_charger_type = chg->real_charger_type;
+
+	if (chg->real_charger_type == POWER_SUPPLY_TYPE_USB_HVDCP)
+		power_supply_changed(chg->usb_psy);
+
+	if (chg->real_charger_type == POWER_SUPPLY_TYPE_USB_HVDCP_3P5 ||
+		chg->real_charger_type == POWER_SUPPLY_TYPE_USB_HVDCP_3 ||
+			chg->real_charger_type == POWER_SUPPLY_TYPE_USB_HVDCP ||
+			chg->real_charger_type == POWER_SUPPLY_TYPE_USB_CDP ||
+			chg->pd_active || (check_count >= TYPE_RECHECK_COUNT) ||
+			((chg->real_charger_type == POWER_SUPPLY_TYPE_USB_FLOAT) &&
+				(chg->typec_mode == POWER_SUPPLY_TYPEC_SINK_AUDIO_ADAPTER))) {
+		smblib_dbg(chg, PR_OEM, "hvdcp detect or check_count = %d break\n",
+				check_count);
+		check_count = 0;
+
+		/* TypeC mode change, remove CC uncompliant vote */
+		if ( chg->cc_un_compliant_detected == true
+			&& (chg->typec_mode != POWER_SUPPLY_TYPEC_NONE
+				&& chg->typec_mode != POWER_SUPPLY_TYPEC_NON_COMPLIANT)) {
+			vote(chg->usb_icl_votable, CC_UN_COMPLIANT_VOTER, false, 0);
+			vote(chg->fcc_votable, CC_UN_COMPLIANT_VOTER, false, 0);
+			pr_err("Recheck remove CC uncompliant vote\n");
+			chg->cc_un_compliant_detected = false;
+			smblib_hvdcp_detect_enable(chg, false);
+		}
+
+		return;
+	}
+
+	if (smblib_get_prop_dfp_mode(chg) != POWER_SUPPLY_TYPEC_NONE)
+		goto check_next;
+
+	if (!chg->recheck_charger)
+		chg->precheck_charger_type = chg->real_charger_type;
+	chg->recheck_charger = true;
+
+	/* need request hsusb phy dpdm to false then true for float charger */
+	if (chg->real_charger_type == POWER_SUPPLY_TYPE_USB_FLOAT
+		|| chg->real_charger_type == POWER_SUPPLY_TYPE_USB_DCP) {
+		rc = smblib_request_dpdm(chg, false);
+		if (rc < 0)
+			smblib_err(chg, "Couldn't disable DPDM rc=%d\n", rc);
+		if ( chg->real_charger_type == POWER_SUPPLY_TYPE_USB_FLOAT)
+			chg->is_float_recheck = true;
+		msleep(500);
+	}
+
+	smblib_rerun_apsd_if_required(chg);
+
+check_next:
+	check_count++;
+	schedule_delayed_work(&chg->charger_type_recheck,
+				msecs_to_jiffies(recheck_time));
+}
+
+
 static void smblib_cp_status_change_work(struct work_struct *work)
 {
 	int rc;
@@ -8093,6 +8529,8 @@ int smblib_init(struct smb_charger *chg)
 	INIT_DELAYED_WORK(&chg->bb_removal_work, smblib_bb_removal_work);
 	INIT_DELAYED_WORK(&chg->lpd_ra_open_work, smblib_lpd_ra_open_work);
 	INIT_DELAYED_WORK(&chg->lpd_detach_work, smblib_lpd_detach_work);
+	INIT_DELAYED_WORK(&chg->charger_type_recheck, smblib_charger_type_recheck);
+	INIT_DELAYED_WORK(&chg->cc_un_compliant_charge_work,smblib_cc_un_compliant_charge_work);
 	INIT_DELAYED_WORK(&chg->thermal_regulation_work,
 					smblib_thermal_regulation_work);
 	INIT_DELAYED_WORK(&chg->usbov_dbc_work, smblib_usbov_dbc_work);
@@ -8176,7 +8614,7 @@ int smblib_init(struct smb_charger *chg)
 		}
 
 		chg->bms_psy = power_supply_get_by_name("bms");
-
+		chg->bq27541_psy= power_supply_get_by_name("bq27541");
 		if (chg->sec_pl_present) {
 			chg->pl.psy = power_supply_get_by_name("parallel");
 			if (chg->pl.psy) {
@@ -8255,6 +8693,7 @@ int smblib_deinit(struct smb_charger *chg)
 		cancel_delayed_work_sync(&chg->bb_removal_work);
 		cancel_delayed_work_sync(&chg->lpd_ra_open_work);
 		cancel_delayed_work_sync(&chg->lpd_detach_work);
+		cancel_delayed_work_sync(&chg->cc_un_compliant_charge_work);
 		cancel_delayed_work_sync(&chg->thermal_regulation_work);
 		cancel_delayed_work_sync(&chg->usbov_dbc_work);
 		cancel_delayed_work_sync(&chg->role_reversal_check);

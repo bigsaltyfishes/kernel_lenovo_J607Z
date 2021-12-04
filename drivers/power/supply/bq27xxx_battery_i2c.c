@@ -18,8 +18,11 @@
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <asm/unaligned.h>
+#include <linux/delay.h>
 
 #include <linux/power/bq27xxx_battery.h>
+
+int aronz_boardid;
 
 static DEFINE_IDR(battery_id);
 static DEFINE_MUTEX(battery_mutex);
@@ -40,6 +43,7 @@ static int bq27xxx_battery_i2c_read(struct bq27xxx_device_info *di, u8 reg,
 	struct i2c_msg msg[2];
 	u8 data[2];
 	int ret;
+	int times =0; //add i2c read times for i2c_error
 
 	if (!client->adapter)
 		return -ENODEV;
@@ -57,6 +61,15 @@ static int bq27xxx_battery_i2c_read(struct bq27xxx_device_info *di, u8 reg,
 		msg[1].len = 2;
 
 	ret = i2c_transfer(client->adapter, msg, ARRAY_SIZE(msg));
+	//add i2c read times for i2c_error
+	while(ret < 0 && times < 5)
+	{
+		pr_err("%s: read reg = 0x%x error, ret = %d,read again %d times more to check!!!", __func__,*msg[0].buf,ret,times+1);
+		msleep(2000);
+		ret = i2c_transfer(client->adapter, msg, ARRAY_SIZE(msg));
+		times++;
+	};
+	//add i2c read times for i2c_error
 	if (ret < 0)
 		return ret;
 
@@ -148,9 +161,21 @@ static int bq27xxx_battery_i2c_probe(struct i2c_client *client,
 				     const struct i2c_device_id *id)
 {
 	struct bq27xxx_device_info *di;
+	struct device *dev = &client->dev;
 	int ret;
-	char *name;
+	u32 boardid = 0;
+	//char *name;
 	int num;
+
+	ret = of_property_read_u32(dev->of_node, "boardid_info", &boardid);
+	if (ret) {
+		dev_err(&client->dev, "read boardid form dtsi file failed\n");
+	} else {
+		dev_err(&client->dev, "read boardid form dtsi file is %d with aronz boardid is %d\n", boardid, aronz_boardid);
+	}
+
+	if (((boardid == 0) && (aronz_boardid != 0)) || ((boardid == 1) && (aronz_boardid == 0)))
+		return 0;
 
 	/* Get new ID for the new battery device */
 	mutex_lock(&battery_mutex);
@@ -159,9 +184,9 @@ static int bq27xxx_battery_i2c_probe(struct i2c_client *client,
 	if (num < 0)
 		return num;
 
-	name = devm_kasprintf(&client->dev, GFP_KERNEL, "%s-%d", id->name, num);
-	if (!name)
-		goto err_mem;
+	//name = devm_kasprintf(&client->dev, GFP_KERNEL, "%s-%d", id->name, num);
+	//if (!name)
+		//goto err_mem;
 
 	di = devm_kzalloc(&client->dev, sizeof(*di), GFP_KERNEL);
 	if (!di)
@@ -170,7 +195,8 @@ static int bq27xxx_battery_i2c_probe(struct i2c_client *client,
 	di->id = num;
 	di->dev = &client->dev;
 	di->chip = id->driver_data;
-	di->name = name;
+	//di->name = name;
+	di->name = "bq27541";
 
 	di->bus.read = bq27xxx_battery_i2c_read;
 	di->bus.write = bq27xxx_battery_i2c_write;
@@ -299,6 +325,18 @@ static struct i2c_driver bq27xxx_battery_i2c_driver = {
 	.id_table = bq27xxx_i2c_id_table,
 };
 module_i2c_driver(bq27xxx_battery_i2c_driver);
+
+static int __init aronz_boardid_init(char *str)
+{
+	if (!strcmp(str, "0"))
+		aronz_boardid = 0;
+	else
+		aronz_boardid = 1;
+
+	return 1;
+}
+
+__setup("androidboot.boardid=", aronz_boardid_init);
 
 MODULE_AUTHOR("Andrew F. Davis <afd@ti.com>");
 MODULE_DESCRIPTION("BQ27xxx battery monitor i2c driver");
