@@ -63,6 +63,9 @@ ifdef CONFIG_COMPAT
 endif
 obj-$(CONFIG_MSM_FASTCVPD)	+= fastcvpd.o
 obj-$(CONFIG_MSM_RDBG)		+= rdbg.o
+#add for factory runintest2 begin
+obj-$(CONFIG_I2C_DEVINFO)	+= i2c_devinfo/
+#add for factory runintest2 end
 obj-$(CONFIG_ADI)		+= adi.o
 obj-$(CONFIG_DIAG_CHAR)		+= diag/
 obj-$(CONFIG_OKL4_PIPE)		+= okl4_pipe.o
