@@ -685,7 +685,7 @@ static void handle_modversions(struct module *mod, struct elf_info *info,
 
 		if (is_crc) {
 			const char *e = is_vmlinux(mod->name) ?"":".ko";
-			warn("EXPORT symbol \"%s\" [%s%s] version generation failed, symbol will not be versioned.\n",
+			warn("",
 			     symname + strlen("__crc_"), mod->name, e);
 		}
 		mod->unres = alloc_symbol(symname,
