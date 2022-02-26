@@ -3521,7 +3521,7 @@ try_onemore:
 	sbi->valid_super_block = valid_super_block;
 	init_rwsem(&sbi->gc_lock);
 	mutex_init(&sbi->writepages);
-	mutex_init(&sbi->cp_mutex);
+	init_rwsem(&sbi->cp_global_sem);
 	init_rwsem(&sbi->node_write);
 	init_rwsem(&sbi->node_change);
 
@@ -4045,4 +4045,5 @@ module_exit(exit_f2fs_fs)
 MODULE_AUTHOR("Samsung Electronics's Praesto Team");
 MODULE_DESCRIPTION("Flash Friendly File System");
 MODULE_LICENSE("GPL");
+MODULE_SOFTDEP("pre: crc32");
 

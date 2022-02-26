@@ -3004,6 +3004,7 @@ int regulatory_hint_user(const char *alpha2,
 
 	return 0;
 }
+EXPORT_SYMBOL(regulatory_hint_user);
 
 int regulatory_hint_indoor(bool is_indoor, u32 portid)
 {
@@ -3423,7 +3424,7 @@ static void print_rd_rules(const struct ieee80211_regdomain *rd)
 		power_rule = &reg_rule->power_rule;
 
 		if (reg_rule->flags & NL80211_RRF_AUTO_BW)
-			snprintf(bw, sizeof(bw), "%d KHz, %d KHz AUTO",
+			snprintf(bw, sizeof(bw), "%d KHz, %u KHz AUTO",
 				 freq_range->max_bandwidth_khz,
 				 reg_get_max_bandwidth(rd, reg_rule));
 		else

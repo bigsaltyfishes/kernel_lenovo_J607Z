@@ -1332,21 +1332,8 @@ label:
 	hid->product = le16_to_cpu(ihid->hdesc.wProductID);
 	hid->input_registered=false;
 
-	//snprintf(hid->name, sizeof(hid->name), "%s %04hX:%04hX",
-		// client->name, hid->vendor, hid->product);
-	if(hid->vendor==0x17EF&&hid->product==0x6103){
-		snprintf(hid->name, sizeof(hid->name), "%s %04hX:%04hX P11 5G KeyBoard Lenovo",
-		 client->name, hid->vendor, hid->product);
-		register_kb_wakeup_devices();
-	}
-	if(hid->vendor==0x04F3&&hid->product==0x3164){
-		snprintf(hid->name, sizeof(hid->name), "%s %04hX:%04hX P11 5G TouchPad",
-		 client->name, hid->vendor, hid->product);
-		register_mouse_wakeup_devices();
-	}
-	printk(KERN_DEBUG "hid->version_id=0x%x ",le16_to_cpu(ihid->hdesc.wVersionID));
-
-	printk(KERN_DEBUG "hid->version=0x%x,hid->vendor=0x%x,hid->product=0x%x ",hid->version ,hid->vendor,hid->product);
+	snprintf(hid->name, sizeof(hid->name), "%s %04X:%04X",
+		 client->name, (u16)hid->vendor, (u16)hid->product);
 	strlcpy(hid->phys, dev_name(&client->dev), sizeof(hid->phys));
 
 	ihid->quirks = i2c_hid_lookup_quirk(hid->vendor, hid->product);
