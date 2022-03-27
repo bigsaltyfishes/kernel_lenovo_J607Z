@@ -1,0 +1,6 @@
+config INPUT_HALL_SENSOR
+    bool "input hall sensor"
+	depends on INPUT
+	select INPUT_KEYCOMBO
+	---help---
+	  Set Y here and a list of supported hall sensor will be displayed;
