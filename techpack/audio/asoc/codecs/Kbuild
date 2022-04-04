@@ -256,14 +256,6 @@ wcd9335_dlkm-y := $(WCD9335_OBJS)
 obj-$(CONFIG_SND_SOC_WSA881X) += wsa881x_dlkm.o
 wsa881x_dlkm-y := $(WSA881X_OBJS)
 
-
-obj-m  +=cirrus_wm_adsp_dlkm.o
-cirrus_wm_adsp_dlkm-y := $(CIRRUS_WM_ADSP_OBJS)
-
-obj-m += cirrus_cs35l41_dlkm.o
-cirrus_cs35l41_dlkm-y:= $(CIRRUS_CS35L41_OBJS)
-
-
 obj-$(CONFIG_SND_SOC_WSA881X_ANALOG) += wsa881x_analog_dlkm.o
 wsa881x_analog_dlkm-y := $(WSA881X_ANALOG_OBJS)
 
