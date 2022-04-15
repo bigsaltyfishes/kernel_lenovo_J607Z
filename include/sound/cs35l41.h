@@ -33,6 +33,7 @@ struct cs35l41_platform_data {
 	bool sclk_frc;
 	bool lrclk_frc;
 	bool right_channel;
+	bool runtime_channel_switch;
 	bool amp_gain_zc;
 	bool ng_enable;
 	bool tuning_has_prefix;
