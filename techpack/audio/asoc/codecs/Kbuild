@@ -186,13 +186,6 @@ ifdef CONFIG_SND_SOC_WCD_IRQ
 	CORE_OBJS += wcd-irq.o
 endif
 
-ifdef CONFIG_CIRRUS_SMARTAMP
-	CIRRUS_WM_ADSP_OBJS += wm_adsp.o
-	CIRRUS_CS35L41_OBJS += cs35l41.o
-	CIRRUS_CS35L41_OBJS += cs35l41-tables.o 
-	CIRRUS_CS35L41_OBJS += cs35l41-i2c.o
-endif
-
 LINUX_INC +=	-Iinclude/linux
 
 INCS +=		$(COMMON_INC) \
