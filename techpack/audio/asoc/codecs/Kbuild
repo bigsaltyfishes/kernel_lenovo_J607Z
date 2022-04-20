@@ -186,6 +186,13 @@ ifdef CONFIG_SND_SOC_WCD_IRQ
 	CORE_OBJS += wcd-irq.o
 endif
 
+ifdef CONFIG_CIRRUS_SMARTAMP
+	CIRRUS_WM_ADSP_OBJS += wm_adsp.o
+	CIRRUS_CS35L41_OBJS += cs35l41.o
+	CIRRUS_CS35L41_OBJS += cs35l41-tables.o 
+	CIRRUS_CS35L41_OBJS += cs35l41-i2c.o
+endif
+
 LINUX_INC +=	-Iinclude/linux
 
 INCS +=		$(COMMON_INC) \
@@ -248,6 +255,14 @@ wcd9335_dlkm-y := $(WCD9335_OBJS)
 
 obj-$(CONFIG_SND_SOC_WSA881X) += wsa881x_dlkm.o
 wsa881x_dlkm-y := $(WSA881X_OBJS)
+
+
+obj-m  +=cirrus_wm_adsp_dlkm.o
+cirrus_wm_adsp_dlkm-y := $(CIRRUS_WM_ADSP_OBJS)
+
+obj-m += cirrus_cs35l41_dlkm.o
+cirrus_cs35l41_dlkm-y:= $(CIRRUS_CS35L41_OBJS)
+
 
 obj-$(CONFIG_SND_SOC_WSA881X_ANALOG) += wsa881x_analog_dlkm.o
 wsa881x_analog_dlkm-y := $(WSA881X_ANALOG_OBJS)
