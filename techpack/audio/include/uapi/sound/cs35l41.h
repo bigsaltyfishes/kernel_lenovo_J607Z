@@ -78,11 +78,11 @@ struct cs35l41_private {
 	int extclk_freq;
 	int extclk_cfg;
 	int sclk;
-	bool reload_tuning;
 	unsigned int gpi_glob_en;
 	int lrclk_fmt;
 	int sclk_fmt;
 	int amp_hibernate;
+	bool reload_tuning;
 	bool dspa_mode;
 	bool i2s_mode;
 	bool swire_mode;
@@ -93,7 +93,7 @@ struct cs35l41_private {
 	bool bus_spi;
 	bool fast_switch_en;
 	bool force_int;
-	struct mutex rate_lock;
+
 	bool hibernate_force_wake;
 	bool restart_needed;
 	/* GPIO for /RST */
@@ -102,6 +102,7 @@ struct cs35l41_private {
 	unsigned int fast_switch_file_idx;
 	struct soc_enum fast_switch_enum;
 	const char **fast_switch_names;
+	struct mutex rate_lock;
 	struct mutex force_int_lock;
 	struct delayed_work hb_work;
 	struct work_struct restart_work;

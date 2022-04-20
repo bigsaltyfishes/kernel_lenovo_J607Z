@@ -76,12 +76,6 @@ ifeq ($(KERNEL_BUILD), 0)
 		export
 		INCS    +=  -include $(AUDIO_ROOT)/config/gvmautoconf.h
 	endif
-	ifeq ($(CONFIG_NAIRO_DTB), y)
-		INCS    +=  -include $(AUDIO_ROOT)/config/litonairo_asoc.h
-        endif
-	ifeq ($(CONFIG_SMITH_DTB), y)
-		INCS    +=  -include $(AUDIO_ROOT)/config/litosmith.h
-	endif
 	ifeq ($(CONFIG_ARCH_SDM660), y)
 		include $(AUDIO_ROOT)/config/sdm660auto.conf
 		export
@@ -112,6 +106,10 @@ UAPI_INC :=	-I$(AUDIO_ROOT)/include/$(UAPI_DIR)
 ############ COMMON ############
 COMMON_DIR :=	include
 COMMON_INC :=	-I$(AUDIO_ROOT)/$(COMMON_DIR)
+
+############ SOUND ############
+SOUND_DIR :=	sound
+SOUND_INC :=	-I$(AUDIO_ROOT)/include/$(SOUND_DIR)
 
 ############ ASoC Drivers ############
 
@@ -216,7 +214,8 @@ endif
 LINUX_INC +=	-Iinclude/linux
 
 INCS +=		$(COMMON_INC) \
-		$(UAPI_INC)
+		$(UAPI_INC) \
+		$(SOUND_INC)
 
 EXTRA_CFLAGS += $(INCS)
 
