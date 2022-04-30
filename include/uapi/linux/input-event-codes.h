@@ -337,6 +337,25 @@
 
 #define KEY_MICMUTE		248	/* Mute / unmute the microphone */
 
+#define KEY_ANT_CONNECT         0x292	/* key for sar ant check */
+#define KEY_ANT_UNCONNECT       0x293	/* key for sar ant check */
+#define DIV_ANT_CONNECT         0X294 	/* key for sar ant div check*/
+#define DIV_ANT_UNCONNECT       0X295 	/* key for sar ant div check*/
+
+
+
+#define KEY_SAR_CH0_CS0      0x296  		//CH0_cs0 ANT4_CAP
+#define KEY_SAR_CH1_CS2      0x298		//CH1_CS2  main
+#define KEY_SAR_RELEASECH0_CS0	    0x297	//CH0_cs0 ANT4_CAP
+#define KEY_SAR_RELEASECH1_CS2	    0x299	//CH1_CS2  main
+#define KEY_SAR_CH2_CS4      0x29a 	 	//CH2_CS4 wifi ch0 ant
+#define KEY_SAR_CH3_CS6      0x29c		//CH3_CS6 wifi ch1 ant
+#define KEY_SAR_RELEASECH2_CS4	    0x29b	//CH0_cs2 wifi ch0 ant
+#define KEY_SAR_RELEASECH3_CS6      0x29d	//CH3_CS6 wifi ch1 ant
+#define KEY_SAR_CH0_CS0_2      0x2a1  		//CH0_cs0 ANT4_CAP
+#define KEY_SAR_CH1_CS2_2      0x2a2		//CH1_CS2  main
+#define KEY_SAR_CH2_CS4_2      0x2a3 	 	//CH2_CS4 wifi ch0 ant
+#define KEY_SAR_CH3_CS6_2      0x2a4		//CH3_CS6 wifi ch1 ant
 /* Code 255 is reserved for special needs of AT keyboard driver */
 
 #define BTN_MISC		0x100
@@ -607,6 +626,10 @@
 
 #define KEY_BRIGHTNESS_MIN		0x250	/* Set Brightness to Minimum */
 #define KEY_BRIGHTNESS_MAX		0x251	/* Set Brightness to Maximum */
+
+#define KEY_NC             634
+#define KEY_FULLSCREEN  635
+#define KEY_SWITCHLANGUAGE 636
 
 #define KEY_KBDINPUTASSIST_PREV		0x260
 #define KEY_KBDINPUTASSIST_NEXT		0x261

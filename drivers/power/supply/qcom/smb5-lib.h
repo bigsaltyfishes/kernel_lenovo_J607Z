@@ -25,6 +25,7 @@ enum print_reason {
 	PR_PARALLEL	= BIT(3),
 	PR_OTG		= BIT(4),
 	PR_WLS		= BIT(5),
+	PR_OEM		= BIT(6),
 };
 
 #define DEFAULT_VOTER			"DEFAULT_VOTER"
@@ -65,6 +66,7 @@ enum print_reason {
 #define JEITA_ARB_VOTER			"JEITA_ARB_VOTER"
 #define MOISTURE_VOTER			"MOISTURE_VOTER"
 #define HVDCP2_ICL_VOTER		"HVDCP2_ICL_VOTER"
+#define CC_UN_COMPLIANT_VOTER		"CC_UN_COMPLIANT_VOTER"
 #define AICL_THRESHOLD_VOTER		"AICL_THRESHOLD_VOTER"
 #define USBOV_DBC_VOTER			"USBOV_DBC_VOTER"
 #define CHG_TERMINATION_VOTER		"CHG_TERMINATION_VOTER"
@@ -94,15 +96,36 @@ enum print_reason {
 #define SDP_100_MA			100000
 #define SDP_CURRENT_UA			500000
 #define CDP_CURRENT_UA			1500000
-#define DCP_CURRENT_UA			1500000
-#define HVDCP_CURRENT_UA		3000000
+#define DCP_CURRENT_UA			2000000
+#define FLOAT_CURRENT_UA		1000000
+#define HVDCP_CURRENT_UA		2000000
 #define TYPEC_DEFAULT_CURRENT_UA	900000
 #define TYPEC_MEDIUM_CURRENT_UA		1500000
 #define TYPEC_HIGH_CURRENT_UA		3000000
 #define DCIN_ICL_MIN_UA			100000
-#define DCIN_ICL_MAX_UA			1500000
+#define DCIN_ICL_MAX_UA			2000000
 #define DCIN_ICL_STEP_UA		100000
 #define ROLE_REVERSAL_DELAY_MS		500
+
+/* defined for charger type recheck */
+#define CHARGER_RECHECK_DELAY_MS	30000
+#define TYPE_RECHECK_TIME_5S	5000
+#define TYPE_RECHECK_COUNT	3
+
+/* defined for un_compliant Type-C cable */
+#define CC_UN_COMPLIANT_START_DELAY_MS	700
+
+
+#define POGO_SUPPORT
+#ifdef POGO_SUPPORT
+	#define POGO_CURRENT_UA			2000000
+#endif
+
+#ifdef POGO_SUPPORT
+	#ifndef POGO_DEBUG
+		#define POGO_DEBUG
+	#endif
+#endif
 
 enum smb_mode {
 	PARALLEL_MASTER = 0,
@@ -295,6 +318,7 @@ enum icl_override_mode {
 	SW_OVERRIDE_USB51_MODE,
 	/* ICL other than USB51 */
 	SW_OVERRIDE_HC_MODE,
+	SW_OVERRIDE_NO_CC_MODE,
 };
 
 /* EXTCON_USB and EXTCON_USB_HOST are mutually exclusive */
@@ -407,6 +431,7 @@ struct smb_charger {
 	struct power_supply		*usb_port_psy;
 	struct power_supply		*wls_psy;
 	struct power_supply		*cp_psy;
+	struct power_supply		*bq27541_psy;
 	enum power_supply_type		real_charger_type;
 
 	/* notifiers */
@@ -470,6 +495,8 @@ struct smb_charger {
 	struct delayed_work	pr_swap_detach_work;
 	struct delayed_work	pr_lock_clear_work;
 	struct delayed_work	role_reversal_check;
+	struct delayed_work	charger_type_recheck;
+	struct delayed_work	cc_un_compliant_charge_work;
 
 	struct alarm		lpd_recheck_timer;
 	struct alarm		moisture_protection_alarm;
@@ -586,6 +613,7 @@ struct smb_charger {
 	/* workaround flag */
 	u32			wa_flags;
 	int			boost_current_ua;
+	bool			cc_un_compliant_detected;
 	int                     qc2_max_pulses;
 	enum qc2_non_comp_voltage qc2_unsupported_voltage;
 	bool			dbc_usbov;
@@ -615,6 +643,25 @@ struct smb_charger {
 	int			dcin_uv_count;
 	ktime_t			dcin_uv_last_time;
 	int			last_wls_vout;
+
+	/* charger type recheck */
+	int			recheck_charger;
+	int			precheck_charger_type;
+
+#ifdef POGO_SUPPORT
+	/* pogo */
+	u32			usb_state_gpio;
+	u32			pogo_state_gpio;
+	u32			otg_en1_gpio;/*high:enable 5v_boost & disable pogo charge*/
+	u32			power_off_mode;
+	u32			otg_en_gpio;
+	u32			last_time_otg_en;
+#endif
+	struct pinctrl			*pinctrl;
+	struct pinctrl_state	*pinctrl_state1;
+	struct pinctrl_state	*pinctrl_state2;
+	int			usbin_ocp_irq;
+	bool   is_float_recheck;
 };
 
 int smblib_read(struct smb_charger *chg, u16 addr, u8 *val);
@@ -817,6 +864,9 @@ int smblib_set_prop_pr_swap_in_progress(struct smb_charger *chg,
 int smblib_typec_port_type_set(const struct typec_capability *cap,
 					enum typec_port_type type);
 int smblib_get_prop_from_bms(struct smb_charger *chg,
+				enum power_supply_property psp,
+				union power_supply_propval *val);
+int smblib_get_prop_from_bq27541(struct smb_charger *chg,
 				enum power_supply_property psp,
 				union power_supply_propval *val);
 int smblib_get_iio_channel(struct smb_charger *chg, const char *propname,

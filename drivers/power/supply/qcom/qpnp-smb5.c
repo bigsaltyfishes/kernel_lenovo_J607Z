@@ -23,6 +23,16 @@
 #include "smb5-reg.h"
 #include "smb5-lib.h"
 #include "schgm-flash.h"
+#include <linux/gpio.h>
+#include <linux/of_gpio.h>
+
+//zhaos
+struct pinctrl *pinctrl = NULL;
+struct pinctrl_state *pinctrl_state1 = NULL;
+struct pinctrl_state *pinctrl_state2 = NULL;
+
+static int g_fg_retry_times = 0;
+int off_mode;
 
 static struct smb_params smb5_pmi632_params = {
 	.fcc			= {
@@ -227,7 +237,7 @@ struct smb5 {
 	struct smb_dt_props	dt;
 };
 
-static int __debug_mask;
+static int __debug_mask=0xff;
 
 static ssize_t pd_disabled_show(struct device *dev, struct device_attribute
 				*attr, char *buf)
@@ -613,6 +623,29 @@ static int smb5_parse_dt_misc(struct smb5 *chip, struct device_node *node)
 	if (chg->chg_param.qc4_max_icl_ua <= 0)
 		chg->chg_param.qc4_max_icl_ua = MICRO_4PA;
 
+#ifdef POGO_SUPPORT
+	/* pogo */
+	chg->usb_state_gpio = of_get_named_gpio(
+				node, "qcom,usb-state-gpio",0);
+	if (chg->usb_state_gpio < 0)
+		pr_err("request qcom,qcom,usb-state-gpio fail\n");
+
+	chg->pogo_state_gpio = of_get_named_gpio(
+				node, "qcom,pogo-state-gpio",0);
+	if (chg->pogo_state_gpio < 0)
+		pr_err("request qcom,pogo-state-gpio fail\n");
+
+	chg->otg_en1_gpio = of_get_named_gpio(
+				node, "qcom,otg-en1-gpio",0);
+	if (chg->otg_en1_gpio < 0)
+		pr_err("request qcom,otg-en1-gpio fail\n");
+
+	chg->otg_en_gpio = of_get_named_gpio(
+				node, "qcom,otg-en-gpio",0);
+	if (chg->otg_en_gpio < 0)
+		pr_err("request qcom,otg-en-gpio fail\n");
+#endif
+
 	return 0;
 }
 
@@ -675,6 +708,7 @@ static int smb5_parse_dt_currents(struct smb5 *chip, struct device_node *node)
 			"qcom,fcc-max-ua", &chip->dt.batt_profile_fcc_ua);
 	if (rc < 0)
 		chip->dt.batt_profile_fcc_ua = -EINVAL;
+	printk("==test qcom,fcc-max-ua:%d\n", chip->dt.batt_profile_fcc_ua);
 
 	rc = of_property_read_u32(node,
 				"qcom,usb-icl-ua", &chip->dt.usb_icl_ua);
@@ -1319,6 +1353,7 @@ static enum power_supply_property smb5_usb_main_props[] = {
 	POWER_SUPPLY_PROP_COMP_CLAMP_LEVEL,
 	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_HOT_TEMP,
+	POWER_SUPPLY_PROP_POGO_STATUS,
 };
 
 static int smb5_usb_main_get_prop(struct power_supply *psy,
@@ -1387,6 +1422,9 @@ static int smb5_usb_main_get_prop(struct power_supply *psy,
 	/* Use this property to report overheat status */
 	case POWER_SUPPLY_PROP_HOT_TEMP:
 		val->intval = chg->thermal_overheat;
+		break;
+	case POWER_SUPPLY_PROP_POGO_STATUS:
+		val->intval = gpio_get_value(chg->pogo_state_gpio) ? 0:1;
 		break;
 	default:
 		pr_debug("get prop %d is not supported in usb-main\n", psp);
@@ -1729,6 +1767,9 @@ static enum power_supply_property smb5_batt_props[] = {
 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
 	POWER_SUPPLY_PROP_TIME_TO_FULL_NOW,
 	POWER_SUPPLY_PROP_FCC_STEPPER_ENABLE,
+	POWER_SUPPLY_PROP_SYSTEM_TEMP_LEVEL,
+/*runin charging control*/
+	POWER_SUPPLY_PROP_CHARGING_ENABLED,
 };
 
 #define DEBUG_ACCESSORY_TEMP_DECIDEGC	250
@@ -1756,7 +1797,28 @@ static int smb5_batt_get_prop(struct power_supply *psy,
 		rc = smblib_get_prop_batt_charge_type(chg, val);
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY:
-		rc = smblib_get_prop_batt_capacity(chg, val);
+		if (g_fg_retry_times <= 20) {
+			rc = smblib_get_prop_from_bq27541(chg,
+					POWER_SUPPLY_PROP_CAPACITY, val);
+			if (rc < 0) {
+				rc = smblib_get_prop_batt_capacity(chg, val);
+				if (rc >= 0) {			
+					g_fg_retry_times ++;
+					pr_err("smblib_get_prop_from_bq27541 fail:%d times \n", g_fg_retry_times);
+					if (g_fg_retry_times > 20) {
+						pr_err(" battery fg is broken\n");
+						//return -1 ;
+					}
+				}
+			} else {
+				if (g_fg_retry_times > 0) {
+				g_fg_retry_times = 0;
+				}
+			}
+		} else {
+			pr_err(" battery fg is broken, get battery capacity from bms\n");
+			rc = smblib_get_prop_batt_capacity(chg, val);
+		}
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT:
 		rc = smblib_get_prop_system_temp_level(chg, val);
@@ -1870,6 +1932,9 @@ static int smb5_batt_get_prop(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_FORCE_RECHARGE:
 		val->intval = 0;
 		break;
+	case POWER_SUPPLY_PROP_SYSTEM_TEMP_LEVEL:
+		rc = smblib_get_prop_system_temp_level(chg, val);
+		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
 		rc = smblib_get_prop_from_bms(chg,
 				POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN, val);
@@ -1881,6 +1946,12 @@ static int smb5_batt_get_prop(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_FCC_STEPPER_ENABLE:
 		val->intval = chg->fcc_stepper_enable;
 		break;
+/*runin charging control start*/
+	case POWER_SUPPLY_PROP_CHARGING_ENABLED:
+		val->intval = !!get_client_vote(chg->usb_icl_votable,
+					      USER_VOTER);
+		break;
+/*runin charging control end*/
 	default:
 		pr_err("batt power supply prop %d not supported\n", psp);
 		return -EINVAL;
@@ -1900,6 +1971,8 @@ static int smb5_batt_set_prop(struct power_supply *psy,
 {
 	int rc = 0;
 	struct smb_charger *chg = power_supply_get_drvdata(psy);
+/*runin charging control*/
+	union power_supply_propval pval = {0, };
 
 	switch (prop) {
 	case POWER_SUPPLY_PROP_STATUS:
@@ -1985,9 +2058,31 @@ static int smb5_batt_set_prop(struct power_supply *psy,
 			vote(chg->chg_disable_votable, FORCE_RECHARGE_VOTER,
 					false, 0);
 		break;
+	case POWER_SUPPLY_PROP_SYSTEM_TEMP_LEVEL:
+		rc = smblib_set_prop_system_temp_level(chg, val);
+		break;
 	case POWER_SUPPLY_PROP_FCC_STEPPER_ENABLE:
 		chg->fcc_stepper_enable = val->intval;
 		break;
+/*runin charging control start*/
+	case POWER_SUPPLY_PROP_CHARGING_ENABLED:
+		smblib_get_prop_batt_capacity(chg, &pval);
+		printk("runin:battery capacity is %d,want to %s.\n",pval.intval,
+				!(bool)val->intval ? "suspend" : "resume");
+		/* vote 0mA when suspended */
+		rc = vote(chg->usb_icl_votable, USER_VOTER, !(bool)val->intval, 0);
+		if (rc < 0) {
+			dev_err(chg->dev, "runin:Couldn't vote to %s USB rc=%d\n",
+				!(bool)val->intval ? "suspend" : "resume", rc);
+		}
+		rc = vote(chg->dc_suspend_votable, USER_VOTER, !(bool)val->intval, 0);
+		if (rc < 0) {
+			dev_err(chg->dev, "runin:Couldn't vote to %s DC rc=%d\n",
+				!(bool)val->intval ? "suspend" : "resume", rc);
+		}
+		power_supply_changed(chg->batt_psy);
+		break;
+/*runin charging control end*/
 	default:
 		rc = -EINVAL;
 	}
@@ -2009,6 +2104,8 @@ static int smb5_batt_prop_is_writeable(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMITED:
 	case POWER_SUPPLY_PROP_STEP_CHARGING_ENABLED:
 	case POWER_SUPPLY_PROP_DIE_HEALTH:
+/* runin charging control*/
+	case POWER_SUPPLY_PROP_CHARGING_ENABLED:
 		return 1;
 	default:
 		break;
@@ -2908,7 +3005,7 @@ static int smb5_init_hw(struct smb5 *chip)
 	}
 
 	rc = smblib_write(chg, CHGR_FAST_CHARGE_SAFETY_TIMER_CFG_REG,
-					FAST_CHARGE_SAFETY_TIMER_768_MIN);
+					FAST_CHARGE_SAFETY_TIMER_1536_MIN);
 	if (rc < 0) {
 		dev_err(chg->dev, "Couldn't set CHGR_FAST_CHARGE_SAFETY_TIMER_CFG_REG rc=%d\n",
 			rc);
@@ -2996,6 +3093,9 @@ static int smb5_determine_initial_status(struct smb5 *chip)
 	union power_supply_propval val;
 	int rc;
 
+#ifdef POGO_SUPPORT
+	int usb_path_state, pogo_path_state;
+#endif
 	rc = smblib_get_prop_usb_present(chg, &val);
 	if (rc < 0) {
 		pr_err("Couldn't get usb present rc=%d\n", rc);
@@ -3017,6 +3117,11 @@ static int smb5_determine_initial_status(struct smb5 *chip)
 	wdog_bark_irq_handler(0, &irq_data);
 	typec_or_rid_detection_change_irq_handler(0, &irq_data);
 	wdog_snarl_irq_handler(0, &irq_data);
+#ifdef POGO_SUPPORT
+	usb_path_state = gpio_get_value(chg->usb_state_gpio) ? 0:1;
+	pogo_path_state = gpio_get_value(chg->pogo_state_gpio) ? 0:1;
+	pr_info("usb, pogo ,otg path status=%d, %d, %d\n", usb_path_state, pogo_path_state,chg->otg_en);
+#endif
 
 	return 0;
 }
@@ -3345,12 +3450,34 @@ static int smb5_request_interrupt(struct smb5 *chip,
 	return rc;
 }
 
+//zhaos
+static irqreturn_t ocp_irq_handler(int irq, void *dev_id)
+{
+	struct smb_charger *chg = dev_id;
+	int value = 2;
+	printk("%s:usbin ocp handler detected.ztoh7\n",__func__);
+	value = gpio_get_value(chg->usbin_ocp_irq);
+	printk("%s:gpio51[%d] value=[%d].ztoh7\n",__func__,chg->usbin_ocp_irq,value);
+	if (value == 0) {
+		printk("%s:Trigger over current protection,pull otg_en down.ztoh\n",__func__);
+		if(pinctrl_select_state(pinctrl, pinctrl_state2))
+			printk("%s:pinctrl_select_state[2] func Failed.ztoh\n",__func__);
+	} else {
+		printk("%s:,over current protection Recovery,pull otg_en up.ztoh\n",__func__);
+		if(pinctrl_select_state(pinctrl, pinctrl_state1))
+			printk("%s:pinctrl_select_state[1] func Failed.ztoh\n",__func__);
+	}
+
+	return IRQ_HANDLED;
+}
+//zhaos
+
 static int smb5_request_interrupts(struct smb5 *chip)
 {
 	struct smb_charger *chg = &chip->chg;
 	struct device_node *node = chg->dev->of_node;
 	struct device_node *child;
-	int rc = 0;
+	int rc = 0, ocp_irq = 0;
 	const char *name;
 	struct property *prop;
 
@@ -3362,7 +3489,26 @@ static int smb5_request_interrupts(struct smb5 *chip)
 				return rc;
 		}
 	}
-
+//zhaos
+		chg->usbin_ocp_irq = of_get_named_gpio(node,"qcom,usbin-ocp-irq",0);
+		if (chg->usbin_ocp_irq < 0) {
+			printk("%s:of_get_named_gpio:failed=(%d),<qcom,usbin-ocp-irq>.ztoh\n",__func__,chg->usbin_ocp_irq);
+		} else {
+			printk("%s:of_get_named_gpio:successed=(%d),<qcom,usbin-ocp-irq>.ztoh\n",__func__,chg->usbin_ocp_irq);
+			if (gpio_is_valid(chg->usbin_ocp_irq)) {
+				ocp_irq = gpio_to_irq(chg->usbin_ocp_irq);
+				printk("%s:usbin ocp irq num:%d.ztoh\n",__func__,ocp_irq);
+				rc = request_threaded_irq(ocp_irq, NULL, ocp_irq_handler, IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING | IRQF_ONESHOT, "ocp_detect", chg);
+				if (rc < 0) {
+					printk("%s:failed to request ocp irq handler.ztoh\n",__func__);
+					return rc;
+				}
+			}
+			else
+				printk("%s:gpio_is_vaild:failed=(gpio num:%d),<qcom,usbin-ocp-irq>.ztoh\n",__func__);
+		}
+		enable_irq_wake(ocp_irq);
+//zhaos
 	vote(chg->limited_irq_disable_votable, CHARGER_TYPE_VOTER, true, 0);
 	vote(chg->hdc_irq_disable_votable, CHARGER_TYPE_VOTER, true, 0);
 
@@ -3562,6 +3708,9 @@ static int smb5_probe(struct platform_device *pdev)
 	chg->connector_health = -EINVAL;
 	chg->otg_present = false;
 	chg->main_fcc_max = -EINVAL;
+#ifdef POGO_SUPPORT
+	chg->power_off_mode = off_mode;
+#endif
 	mutex_init(&chg->adc_lock);
 
 	chg->regmap = dev_get_regmap(chg->dev->parent, NULL);
@@ -3737,7 +3886,37 @@ static int smb5_probe(struct platform_device *pdev)
 	}
 
 	device_init_wakeup(chg->dev, true);
+//zhaos
+	chg->pinctrl = devm_pinctrl_get(chg->dev);
+	if(IS_ERR(chg->pinctrl)){
+		printk("%s:devm_pinctrl_get func Failed.ztoh\n",__func__);
+		chg->pinctrl = NULL;
+	}else{
+		pinctrl = chg->pinctrl;
+		printk("%s:pinctrl valued successed.ztoh",__func__);
+	}
 
+	if(chg->pinctrl){
+		chg->pinctrl_state1 = pinctrl_lookup_state(chg->pinctrl,"otg_active");
+		if(IS_ERR(chg->pinctrl_state1)){
+			printk("%s:pinctrl_lookup_state[1] func Failed.ztoh\n",__func__);
+			chg->pinctrl_state1 = NULL;
+		}else{
+			pinctrl_state1 = chg->pinctrl_state1;
+			printk("%s:pinctrl_state1 valued successed.ztoh",__func__);
+		}
+		chg->pinctrl_state2 = pinctrl_lookup_state(chg->pinctrl,"otg_sleep");
+		if(IS_ERR(chg->pinctrl_state2)){
+			printk("%s:pinctrl_lookup_state[2] func Failed.ztoh\n",__func__);
+			chg->pinctrl_state2 = NULL;
+		}else{
+			pinctrl_state2 = chg->pinctrl_state2;
+			printk("%s:pinctrl_state2 valued successed.ztoh",__func__);
+		}
+
+		if(pinctrl_select_state(chg->pinctrl, chg->pinctrl_state2))
+			printk("%s:pinctrl_select_state[2] func Failed.ztoh\n",__func__);
+	}
 	pr_info("QPNP SMB5 probed successfully\n");
 
 	return rc;
@@ -3804,6 +3983,16 @@ static struct platform_driver smb5_driver = {
 	.shutdown	= smb5_shutdown,
 };
 module_platform_driver(smb5_driver);
+
+static int __init off_mode_charging(char *str)
+{
+        if (!strcmp(str, "charger"))
+                off_mode = 1;
+
+                return 1;
+}
+
+__setup("androidboot.mode=", off_mode_charging);
 
 MODULE_DESCRIPTION("QPNP SMB5 Charger Driver");
 MODULE_LICENSE("GPL v2");

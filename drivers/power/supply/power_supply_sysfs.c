@@ -45,8 +45,8 @@ static const char * const power_supply_type_text[] = {
 	"USB_DCP", "USB_CDP", "USB_ACA", "USB_C",
 	"USB_PD", "USB_PD_DRP", "BrickID",
 	"USB_HVDCP", "USB_HVDCP_3", "USB_HVDCP_3P5", "Wireless", "USB_FLOAT",
-	"BMS", "Parallel", "Main", "USB_C_UFP", "USB_C_DFP",
-	"Charge_Pump",
+	"BMS", "Parallel", "Main", "Wipower", "USB_C_UFP", "USB_C_DFP",
+	"Charge_Pump", "POGO",
 };
 
 static const char * const power_supply_usb_type_text[] = {
@@ -82,7 +82,7 @@ static const char * const power_supply_scope_text[] = {
 };
 
 static const char * const power_supply_usbc_text[] = {
-	"Nothing attached", "Sink attached", "Powered cable w/ sink",
+	"Nothing_attached", "Sink attached", "Powered cable w/ sink",
 	"Debug Accessory", "Audio Adapter", "Powered cable w/o sink",
 	"Source attached (default current)",
 	"Source attached (medium current)",
@@ -373,6 +373,7 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(temp_warm),
 	POWER_SUPPLY_ATTR(temp_cold),
 	POWER_SUPPLY_ATTR(temp_hot),
+	POWER_SUPPLY_ATTR(pogo_status),
 	POWER_SUPPLY_ATTR(system_temp_level),
 	POWER_SUPPLY_ATTR(resistance),
 	POWER_SUPPLY_ATTR(resistance_capacitive),

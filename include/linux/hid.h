@@ -232,6 +232,8 @@ struct hid_item {
 #define HID_DC_BATTERYSTRENGTH	0x00060020
 
 #define HID_CP_CONSUMER_CONTROL	0x000c0001
+#define HID_USER_DEFINE	0xffa00001
+
 
 #define HID_DG_DIGITIZER	0x000d0001
 #define HID_DG_PEN		0x000d0002
@@ -563,6 +565,7 @@ struct hid_device {							/* device report descriptor */
 	unsigned country;						/* HID country */
 	struct hid_report_enum report_enum[HID_REPORT_TYPES];
 	struct work_struct led_work;					/* delayed LED worker */
+	struct work_struct connection_work;					/* delayed connection worker */
 
 	struct semaphore driver_input_lock;				/* protects the current driver */
 	struct device dev;						/* device */
@@ -621,6 +624,7 @@ struct hid_device {							/* device report descriptor */
 	struct list_head debug_list;
 	spinlock_t  debug_list_lock;
 	wait_queue_head_t debug_wait;
+	bool input_registered;
 };
 
 #define to_hid_device(pdev) \

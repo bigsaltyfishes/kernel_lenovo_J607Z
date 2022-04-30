@@ -213,6 +213,10 @@ source "drivers/input/misc/Kconfig"
 
 source "drivers/input/rmi4/Kconfig"
 
+source "drivers/input/jdm_sensors/hall/Kconfig"
+
+source "drivers/input/sar_abov/Kconfig"
+
 endif
 
 menu "Hardware I/O ports"

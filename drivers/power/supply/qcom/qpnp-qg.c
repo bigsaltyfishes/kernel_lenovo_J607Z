@@ -28,6 +28,7 @@
 #include <linux/qpnp/qpnp-revid.h>
 #include <uapi/linux/qg.h>
 #include <uapi/linux/qg-profile.h>
+#include <linux/reboot.h>
 #include "fg-alg.h"
 #include "qg-sdam.h"
 #include "qg-core.h"
@@ -36,6 +37,8 @@
 #include "qg-soc.h"
 #include "qg-battery-profile.h"
 #include "qg-defs.h"
+
+extern int bq27xxx_temperature;
 
 static int qg_debug_mask;
 
@@ -2171,6 +2174,31 @@ static int qg_psy_get_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_TEMP:
 		rc = qg_get_battery_temp(chip, &pval->intval);
+		if (rc < 0) {
+			pr_err("get battery temp from pmic aux adc fail\n");
+			pval->intval = -200;
+		}
+		if ((pval->intval < -250 || pval->intval > 1000) && pval->intval != -400) {
+			pr_err("battery temp is out of setting with :%d, just forget it\n", pval->intval);
+			if (pval->intval == -400) {
+				kernel_power_off();
+				pr_err("shut down at once when battery is not present!\n");
+			}
+			break ;
+		}
+		pr_info("pmic aux adc battery temp val:%d, and bettery fg temp bq27xxx_temperature=%d\n", pval->intval, bq27xxx_temperature);
+		if((((bq27xxx_temperature - pval->intval) > 4) && (pval->intval > 500)))
+			pval->intval = bq27xxx_temperature - 3;
+		if((((pval->intval - bq27xxx_temperature) > 4) && (pval->intval < 0)))
+			pval->intval = bq27xxx_temperature + 3;
+		if (pval->intval > 580) {//580
+			if (pval->intval - bq27xxx_temperature > 50)  {
+				pr_err("lj bat get bq temp >50 use bq temp\n");
+				pval->intval = bq27xxx_temperature;
+			}
+		}
+		if((pval->intval-20)>=0)
+			pval->intval-=20;
 		break;
 	case POWER_SUPPLY_PROP_RESISTANCE_ID:
 		pval->intval = chip->batt_id_ohm;
@@ -2392,6 +2420,18 @@ static int qg_charge_full_update(struct qpnp_qg *chip)
 		recharge_soc = prop.intval;
 	}
 	chip->recharge_soc = recharge_soc;
+
+	rc = power_supply_get_property(chip->batt_psy,
+			POWER_SUPPLY_PROP_CAPACITY, &prop);
+	if (rc < 0 || prop.intval < 0) {
+		pr_debug("Failed to get battery soc in qg_charge_full_update \n");
+		return 0;
+	} else {	
+		    if (chip->msoc != prop.intval) {
+			pr_err("qg_charge_full_update with chip->msoc:%d and read battery soc prop.intval:%d\n", chip->msoc, prop.intval);
+			chip->msoc = prop.intval;
+	    }
+	}
 
 	qg_dbg(chip, QG_DEBUG_STATUS, "msoc=%d health=%d charge_full=%d charge_done=%d\n",
 				chip->msoc, health, chip->charge_full,
@@ -4133,10 +4173,10 @@ static int qg_parse_cl_dt(struct qpnp_qg *chip)
 
 #define DEFAULT_VBATT_EMPTY_MV		3200
 #define DEFAULT_VBATT_EMPTY_COLD_MV	3000
-#define DEFAULT_VBATT_CUTOFF_MV		3400
+#define DEFAULT_VBATT_CUTOFF_MV		3300
 #define DEFAULT_VBATT_LOW_MV		3500
 #define DEFAULT_VBATT_LOW_COLD_MV	3800
-#define DEFAULT_ITERM_MA		100
+#define DEFAULT_ITERM_MA		530
 #define DEFAULT_DELTA_SOC		1
 #define DEFAULT_SHUTDOWN_SOC_SECS	360
 #define DEFAULT_COLD_TEMP_THRESHOLD	0

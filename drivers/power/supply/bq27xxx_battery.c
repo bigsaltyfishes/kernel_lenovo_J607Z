@@ -80,6 +80,7 @@
 #define BQ27000_FLAG_CHGS	BIT(7) /* Charge state flag */
 
 /* control register params */
+#define BQ27XXX_CHEM_ID         0x08
 #define BQ27XXX_SEALED			0x20
 #define BQ27XXX_SET_CFGUPDATE		0x13
 #define BQ27XXX_SOFT_RESET		0x42
@@ -90,6 +91,16 @@
 #define BQ27XXX_CURRENT_CONSTANT	(3570) /* 3.57 µV * 1000 */
 
 #define INVALID_REG_ADDR	0xff
+
+#define FEIMAOTUI_PACKID 0x0102
+#define XINWANGDA_PACKID 0x0101
+
+
+
+int bq27xxx_temperature = 250; //read register value is 2981 when temp is 25c
+static int g_bq27xxx_cycle_count = -1;
+static int g_bq27xxx_max_voltage = -1;
+static int g_bq27xxx_cycle_count_keep = -1;
 
 /*
  * bq27xxx_reg_index - Register names
@@ -812,6 +823,9 @@ static struct {
 static DEFINE_MUTEX(bq27xxx_list_lock);
 static LIST_HEAD(bq27xxx_battery_devices);
 
+extern int i2c_devinfo_device_write(char *buf);   //申明i2c检测信息节点写入接口
+bool g_is_boot_first_time = 1;
+
 #define BQ27XXX_MSLEEP(i) usleep_range((i)*1000, (i)*1000+500)
 
 #define BQ27XXX_DM_SZ	32
@@ -972,6 +986,22 @@ static inline int bq27xxx_write_block(struct bq27xxx_device_info *di, int reg_in
 
 	return ret;
 }
+
+
+static int bq27xxx_battery_read_chem_id(struct bq27xxx_device_info *di)
+{
+	int ret;
+        ret = bq27xxx_write(di, BQ27XXX_REG_CTRL, BQ27XXX_CHEM_ID, false);
+        if (ret < 0) {
+		dev_err(di->dev, "bus error on chem id: %d\n", ret);
+		ret=0xff;
+		return ret;
+	}
+	ret = bq27xxx_read(di,BQ27XXX_REG_CTRL,false);
+	dev_dbg(di->dev, "bq27xxx_battery_chem_id ret = 0x%x",ret);
+	return ret;
+}
+
 
 static int bq27xxx_battery_seal(struct bq27xxx_device_info *di)
 {
@@ -1322,6 +1352,7 @@ static void bq27xxx_battery_settings(struct bq27xxx_device_info *di)
  * Return the battery State-of-Charge
  * Or < 0 if something fails.
  */
+static int soc_before = 0; //make last soc value for i2c_error
 static int bq27xxx_battery_read_soc(struct bq27xxx_device_info *di)
 {
 	int soc;
@@ -1331,9 +1362,14 @@ static int bq27xxx_battery_read_soc(struct bq27xxx_device_info *di)
 	else
 		soc = bq27xxx_read(di, BQ27XXX_REG_SOC, false);
 
-	if (soc < 0)
-		dev_dbg(di->dev, "error reading State-of-Charge\n");
-
+	dev_err(di->dev, "bq27xxx_battery_soc:%d   ===\n", soc);
+	if (soc < 0){
+		dev_err(di->dev, " error reading State-of-Charge\n");
+		dev_err(di->dev, "error bq27xxx_battery_soc_beforce:%d   ===\n", soc_before);
+		return  soc_before; //make last soc value for i2c_error
+	}
+	soc_before = soc ; //make last soc value for i2c_error
+    dev_dbg(di->dev, "bq27xxx_battery_soc end soc:%d   ===\n", soc);
 	return soc;
 }
 
@@ -1461,11 +1497,43 @@ static int bq27xxx_battery_read_temperature(struct bq27xxx_device_info *di)
 static int bq27xxx_battery_read_cyct(struct bq27xxx_device_info *di)
 {
 	int cyct;
-
+	struct power_supply *psy = NULL;
+	union power_supply_propval val;
+	if(g_bq27xxx_cycle_count > 0)
+	cyct = g_bq27xxx_cycle_count;
+	else
 	cyct = bq27xxx_read(di, BQ27XXX_REG_CYCT, false);
+
 	if (cyct < 0)
 		dev_err(di->dev, "error reading cycle count total\n");
 
+	if(g_bq27xxx_cycle_count_keep != cyct){
+	psy = power_supply_get_by_name("battery");
+	if (psy)
+	{
+		power_supply_get_property(psy, POWER_SUPPLY_PROP_VOLTAGE_MAX, &val);
+		dev_err(di->dev, "%s:%d:%d   ===\n", __func__,cyct,val.intval);
+
+		if(g_bq27xxx_max_voltage < 0)
+			g_bq27xxx_max_voltage = val.intval;
+
+		if(cyct > 400)
+		{
+			val.intval = g_bq27xxx_max_voltage - 200000;
+		}
+		else if (cyct > 150 && cyct <= 400)
+		{
+			val.intval = g_bq27xxx_max_voltage - 50000;
+		}
+		else
+		{
+			val.intval = g_bq27xxx_max_voltage;
+		}
+		power_supply_set_property(psy, POWER_SUPPLY_PROP_VOLTAGE_MAX, &val);
+		dev_err(di->dev, "%s:%d:%d   ===\n", __func__,cyct,val.intval);
+	}
+	g_bq27xxx_cycle_count_keep = cyct;
+	}
 	return cyct;
 }
 
@@ -1579,10 +1647,21 @@ void bq27xxx_battery_update(struct bq27xxx_device_info *di)
 	bool has_singe_flag = di->opts & BQ27XXX_O_ZERO;
 
 	cache.flags = bq27xxx_read(di, BQ27XXX_REG_FLAGS, has_singe_flag);
-	if ((cache.flags & 0xff) == 0xff)
+	if ((cache.flags & 0xff) == 0xff) {
 		cache.flags = -1; /* read error */
+		i2c_devinfo_device_write("DLJ:0;");
+                bq27xxx_temperature = -200;
+		printk("bq27xxx_battery_update fail\n");
+	}
 	if (cache.flags >= 0) {
+		if (g_is_boot_first_time) {
+			i2c_devinfo_device_write("DLJ:1;");
+			g_is_boot_first_time = 0;
+			printk("bq27xxx_battery_update ok once\n");
+		}
 		cache.temperature = bq27xxx_battery_read_temperature(di);
+		bq27xxx_temperature = cache.temperature -2731;
+		dev_dbg(di->dev, "bq27xxx_temperature=%d\n",bq27xxx_temperature);		
 		if (has_ci_flag && (cache.flags & BQ27000_FLAG_CI)) {
 			dev_info_once(di->dev, "battery is not calibrated! ignoring capacity values\n");
 			cache.capacity = -ENODATA;
@@ -1613,6 +1692,9 @@ void bq27xxx_battery_update(struct bq27xxx_device_info *di)
 		/* We only have to read charge design full once */
 		if (di->charge_design_full <= 0)
 			di->charge_design_full = bq27xxx_battery_read_dcap(di);
+		if((di->cache.chem_id != FEIMAOTUI_PACKID) && (di->cache.chem_id != XINWANGDA_PACKID)
+                      &&(di->cache.chem_id != 0xff))
+			cache.chem_id = bq27xxx_battery_read_chem_id(di);
 	}
 
 	if (di->cache.capacity != cache.capacity)
@@ -1746,6 +1828,7 @@ static int bq27xxx_battery_voltage(struct bq27xxx_device_info *di,
 	}
 
 	val->intval = volt * 1000;
+    dev_dbg(di->dev, "bq27xxx_battery_voltage:%d   ===\n", val->intval);
 
 	return 0;
 }
@@ -1801,6 +1884,7 @@ static int bq27xxx_battery_get_property(struct power_supply *psy,
 		ret = bq27xxx_simple_value(di->cache.temperature, val);
 		if (ret == 0)
 			val->intval -= 2731; /* convert decidegree k to c */
+			dev_dbg(di->dev, "bq27xxx_battery_get_property::val->intval=%d,bq27xxx_temperature=%d\n",val->intval,bq27xxx_temperature);
 		break;
 	case POWER_SUPPLY_PROP_TIME_TO_EMPTY_NOW:
 		ret = bq27xxx_simple_value(di->cache.time_to_empty, val);
@@ -1831,7 +1915,10 @@ static int bq27xxx_battery_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN:
 		return -EINVAL;
 	case POWER_SUPPLY_PROP_CYCLE_COUNT:
-		ret = bq27xxx_simple_value(di->cache.cycle_count, val);
+		if(g_bq27xxx_cycle_count < 0)
+		    ret = bq27xxx_simple_value(di->cache.cycle_count, val);
+		else
+			val->intval = g_bq27xxx_cycle_count;
 		break;
 	case POWER_SUPPLY_PROP_ENERGY_NOW:
 		ret = bq27xxx_simple_value(di->cache.energy, val);
@@ -1843,14 +1930,54 @@ static int bq27xxx_battery_get_property(struct power_supply *psy,
 		ret = bq27xxx_simple_value(di->cache.health, val);
 		break;
 	case POWER_SUPPLY_PROP_MANUFACTURER:
-		val->strval = BQ27XXX_MANUFACTURER;
-		break;
+        if(di->cache.chem_id == FEIMAOTUI_PACKID)
+            val->strval ="FEIMAOTUI";
+        else if(di->cache.chem_id == XINWANGDA_PACKID)
+            val->strval ="XINWANGDA";
+        else if(di->cache.chem_id == 0xff)
+            val->strval =  "UNKNOWN";
+        else
+            val->strval =  "NOTFOUND";
+        break;
 	default:
 		return -EINVAL;
 	}
 
 	return ret;
 }
+
+static int bq27xxx_battery_set_property(struct power_supply *psy,
+					   enum power_supply_property psp,
+					   const union power_supply_propval *val)
+{
+	//struct bq27xxx_device_info *di = power_supply_get_drvdata(psy);
+
+	switch (psp) {
+	case POWER_SUPPLY_PROP_CYCLE_COUNT:
+		g_bq27xxx_cycle_count = val->intval;
+		break;
+
+	default:
+		return -EPERM;
+	}
+
+	return 0;
+}
+
+static int bq27xxx_battery_property_is_writeable(struct power_supply *psy,
+						enum power_supply_property psp)
+{
+	switch (psp) {
+	case POWER_SUPPLY_PROP_CYCLE_COUNT:
+		return 1;
+
+	default:
+		break;
+	}
+
+	return 0;
+}
+
 
 static void bq27xxx_external_power_changed(struct power_supply *psy)
 {
@@ -1885,6 +2012,8 @@ int bq27xxx_battery_setup(struct bq27xxx_device_info *di)
 	psy_desc->properties = bq27xxx_chip_data[di->chip].props;
 	psy_desc->num_properties = bq27xxx_chip_data[di->chip].props_size;
 	psy_desc->get_property = bq27xxx_battery_get_property;
+	psy_desc->set_property = bq27xxx_battery_set_property;
+	psy_desc->property_is_writeable = bq27xxx_battery_property_is_writeable;
 	psy_desc->external_power_changed = bq27xxx_external_power_changed;
 
 	di->bat = power_supply_register_no_ws(di->dev, psy_desc, &psy_cfg);

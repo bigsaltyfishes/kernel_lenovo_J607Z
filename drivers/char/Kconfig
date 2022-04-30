@@ -587,6 +587,11 @@ config ADI
 	  and SSM (Silicon Secured Memory).  Intended consumers of this
 	  driver include crash and makedumpfile.
 
+
+#add for factory runintest2 begin
+source  "drivers/char/i2c_devinfo/Kconfig"
+#add for factory runintest2 end
+
 config RB5_FAN_CONTROLLER
 	tristate "RB5 fan controller driver support"
 	help
