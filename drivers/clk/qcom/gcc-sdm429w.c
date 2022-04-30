@@ -42,6 +42,7 @@ enum {
 	P_GPLL6_OUT_AUX,
 	P_GPLL6_OUT_MAIN,
 	P_SLEEP_CLK,
+	P_GPLL3_OUT_MAIN_DIV,
 };
 
 static const struct parent_map gcc_parent_map_0[] = {
@@ -240,7 +241,7 @@ static const char * const gcc_parent_names_12[] = {
 static const struct parent_map gcc_parent_map_14[] = {
 	{ P_BI_TCXO, 0 },
 	{ P_GPLL0_OUT_MAIN, 1 },
-	{ P_GPLL3_OUT_MAIN, 2 },
+	{ P_GPLL3_OUT_MAIN_DIV, 2 },
 	{ P_GPLL6_OUT_AUX, 3 },
 	{ P_GPLL4_OUT_AUX, 4 },
 	{ P_CORE_BI_PLL_TEST_SE, 7 },
@@ -249,7 +250,7 @@ static const struct parent_map gcc_parent_map_14[] = {
 static const struct parent_map gcc_parent_map_14_gfx3d[] = {
 	{ P_BI_TCXO, 0 },
 	{ P_GPLL0_OUT_MAIN, 5 },
-	{ P_GPLL3_OUT_MAIN, 2 },
+	{ P_GPLL3_OUT_MAIN_DIV, 2 },
 	{ P_GPLL6_OUT_AUX, 6 },
 	{ P_GPLL4_OUT_AUX, 4 },
 	{ P_CORE_BI_PLL_TEST_SE, 7 },
@@ -258,7 +259,7 @@ static const struct parent_map gcc_parent_map_14_gfx3d[] = {
 static const char * const gcc_parent_names_14[] = {
 	"bi_tcxo",
 	"gpll0_out_main",
-	"gpll3_out_main",
+	"gpll3_out_main_div",
 	"gpll6_out_aux",
 	"gpll4_out_aux",
 	"core_bi_pll_test_se",
@@ -466,6 +467,18 @@ static struct clk_alpha_pll gpll3_out_main = {
 	},
 };
 
+static struct clk_fixed_factor gpll3_out_main_div = {
+	.mult = 1,
+	.div = 2,
+	.hw.init = &(struct clk_init_data){
+		.name = "gpll3_out_main_div",
+		.parent_names = (const char *[]){ "gpll3_out_main" },
+		.num_parents = 1,
+		.flags = CLK_SET_RATE_PARENT,
+		.ops = &clk_fixed_factor_ops,
+	},
+};
+
 static struct clk_alpha_pll gpll4_out_main = {
 	.offset = 0x24000,
 	.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_DEFAULT],
@@ -501,17 +514,6 @@ static struct clk_pll gpll6 = {
 	},
 };
 
-static struct clk_regmap gpll6_out_main = {
-	.enable_reg = 0x45000,
-	.enable_mask = BIT(7),
-	.hw.init = &(struct clk_init_data){
-		.name = "gpll6_out_main",
-		.parent_names = (const char *[]){ "gpll6" },
-		.num_parents = 1,
-		.ops = &clk_pll_vote_ops,
-	},
-};
-
 static struct clk_regmap gpll6_out_aux = {
 	.enable_reg = 0x45000,
 	.enable_mask = BIT(7),
@@ -520,6 +522,17 @@ static struct clk_regmap gpll6_out_aux = {
 		.parent_names = (const char *[]){ "gpll6" },
 		.num_parents = 1,
 		.ops = &clk_pll_vote_ops,
+	},
+};
+
+static struct clk_fixed_factor gpll6_out_main = {
+	.mult = 1,
+	.div = 1,
+	.hw.init = &(struct clk_init_data){
+		.name = "gpll6_out_main",
+		.parent_names = (const char *[]){ "gpll6_out_aux" },
+		.num_parents = 1,
+		.ops = &clk_fixed_factor_ops,
 	},
 };
 
@@ -1258,18 +1271,18 @@ static struct clk_rcg2 sdcc2_apps_clk_src = {
 };
 
 static const struct freq_tbl ftbl_usb_hs_system_clk_src[] = {
-	F(57140000, P_GPLL0_OUT_MAIN, 14, 0, 0),
+	F(57142857, P_GPLL0_OUT_MAIN, 14, 0, 0),
 	F(100000000, P_GPLL0_OUT_MAIN, 8, 0, 0),
 	F(133333333, P_GPLL0_OUT_MAIN, 6, 0, 0),
-	F(177780000, P_GPLL0_OUT_MAIN, 4.5, 0, 0),
+	F(177777778, P_GPLL0_OUT_MAIN, 4.5, 0, 0),
 	{ }
 };
 
 static const struct freq_tbl ftbl_usb_hs_system_clk_src_qm215[] = {
 	F( 80000000, P_GPLL0_OUT_MAIN, 10, 0, 0),
 	F( 100000000, P_GPLL0_OUT_MAIN, 8, 0, 0),
-	F( 133330000, P_GPLL0_OUT_MAIN, 6, 0, 0),
-	F( 177780000, P_GPLL0_OUT_MAIN, 4.5, 0, 0),
+	F( 133333333, P_GPLL0_OUT_MAIN, 6, 0, 0),
+	F( 177777778, P_GPLL0_OUT_MAIN, 4.5, 0, 0),
 	{ }
 };
 
@@ -1536,7 +1549,7 @@ static struct clk_rcg2 csi0_clk_src = {
 		.rate_max = (unsigned long[VDD_NUM]) {
 			[VDD_LOW] = 100000000,
 			[VDD_LOW_L1] = 200000000,
-			[VDD_NOMINAL] = 266666667},
+			[VDD_NOMINAL] = 266670000},
 	},
 };
 
@@ -1592,7 +1605,7 @@ static struct clk_rcg2 csi1_clk_src = {
 		.rate_max = (unsigned long[VDD_NUM]) {
 			[VDD_LOW] = 100000000,
 			[VDD_LOW_L1] = 200000000,
-			[VDD_NOMINAL] = 266666667},
+			[VDD_NOMINAL] = 266670000},
 	},
 };
 
@@ -1633,7 +1646,7 @@ static struct clk_rcg2 csi2_clk_src = {
 		.rate_max = (unsigned long[VDD_NUM]) {
 			[VDD_LOW] = 100000000,
 			[VDD_LOW_L1] = 200000000,
-			[VDD_NOMINAL] = 266666667},
+			[VDD_NOMINAL] = 266670000},
 	},
 };
 
@@ -1706,13 +1719,13 @@ static const struct freq_tbl ftbl_gfx3d_clk_src[] = {
 	F_SLEW(240000000, P_GPLL6_OUT_AUX, 4.5, 0, 0, FIXED_FREQ_SRC),
 	F_SLEW(266666667, P_GPLL0_OUT_MAIN, 3, 0, 0, FIXED_FREQ_SRC),
 	F_SLEW(320000000, P_GPLL0_OUT_MAIN, 2.5, 0, 0, FIXED_FREQ_SRC),
-	F_SLEW(355200000, P_GPLL3_OUT_MAIN, 1, 0, 0, 710400000),
-	F_SLEW(375000000, P_GPLL3_OUT_MAIN, 1, 0, 0, 750000000),
+	F_SLEW(355200000, P_GPLL3_OUT_MAIN_DIV, 1, 0, 0, 710400000),
+	F_SLEW(375000000, P_GPLL3_OUT_MAIN_DIV, 1, 0, 0, 750000000),
 	F_SLEW(400000000, P_GPLL0_OUT_MAIN, 2, 0, 0, FIXED_FREQ_SRC),
-	F_SLEW(450000000, P_GPLL3_OUT_MAIN, 1, 0, 0, 900000000),
-	F_SLEW(510000000, P_GPLL3_OUT_MAIN, 1, 0, 0, 1020000000),
-	F_SLEW(560000000, P_GPLL3_OUT_MAIN, 1, 0, 0, 1120000000),
-	F_SLEW(650000000, P_GPLL3_OUT_MAIN, 1, 0, 0, 1300000000),
+	F_SLEW(450000000, P_GPLL3_OUT_MAIN_DIV, 1, 0, 0, 900000000),
+	F_SLEW(510000000, P_GPLL3_OUT_MAIN_DIV, 1, 0, 0, 1020000000),
+	F_SLEW(560000000, P_GPLL3_OUT_MAIN_DIV, 1, 0, 0, 1120000000),
+	F_SLEW(650000000, P_GPLL3_OUT_MAIN_DIV, 1, 0, 0, 1300000000),
 	{ }
 };
 
@@ -1729,6 +1742,12 @@ static struct freq_tbl ftbl_oxili_gfx3d_clk_src_qm215[] = {
 	F_SLEW( 270000000, P_GPLL6_OUT_AUX, 4, 0, 0, FIXED_FREQ_SRC),
 	F_SLEW( 320000000, P_GPLL0_OUT_MAIN, 2.5, 0, 0, FIXED_FREQ_SRC),
 	F_SLEW( 400000000, P_GPLL0_OUT_MAIN, 2, 0, 0, FIXED_FREQ_SRC),
+	F_SLEW( 465000000, P_GPLL3_OUT_MAIN_DIV, 1, 0, 0, 930000000),
+	F_SLEW( 484800000, P_GPLL3_OUT_MAIN_DIV, 1, 0, 0, 969600000),
+	F_SLEW( 500000000, P_GPLL3_OUT_MAIN_DIV, 1, 0, 0, 1000000000),
+	F_SLEW( 523200000, P_GPLL3_OUT_MAIN_DIV, 1, 0, 0, 1046400000),
+	F_SLEW( 550000000, P_GPLL3_OUT_MAIN_DIV, 1, 0, 0, 1100000000),
+	F_SLEW( 598000000, P_GPLL3_OUT_MAIN_DIV, 1, 0, 0, 1196000000),
 	{ }
 };
 
@@ -1743,6 +1762,7 @@ static struct clk_rcg2 gfx3d_clk_src = {
 		.name = "gfx3d_clk_src",
 		.parent_names = gcc_parent_names_14,
 		.num_parents = 6,
+		.flags = CLK_SET_RATE_PARENT,
 		.ops = &clk_rcg2_ops,
 	},
 };
@@ -3920,6 +3940,7 @@ static struct clk_dummy wcnss_m_clk = {
 
 struct clk_hw *gcc_sdm429w_hws[] = {
 	[GPLL0_OUT_AUX] = &gpll0_out_aux.hw,
+	[GPLL6_OUT_MAIN] = &gpll6_out_main.hw,
 };
 
 static struct clk_regmap *gcc_sdm429w_clocks[] = {
@@ -4000,7 +4021,6 @@ static struct clk_regmap *gcc_sdm429w_clocks[] = {
 	[GPLL0_SLEEP_CLK_SRC] = &gpll0_sleep_clk_src.clkr,
 	[GPLL3_OUT_MAIN] = &gpll3_out_main.clkr,
 	[GPLL4_OUT_MAIN] = &gpll4_out_main.clkr,
-	[GPLL6_OUT_MAIN] = &gpll6_out_main,
 	[GPLL6] = &gpll6.clkr,
 	[GPLL6_OUT_AUX] = &gpll6_out_aux,
 	[JPEG0_CLK_SRC] = &jpeg0_clk_src.clkr,
@@ -4246,8 +4266,8 @@ static void fixup_for_qm215(struct platform_device *pdev,
 	sdcc1_apps_clk_src.clkr.hw.init->rate_max[VDD_NOMINAL] = 400000000;
 
 	usb_hs_system_clk_src.clkr.hw.init->rate_max[VDD_LOW] = 800000000;
-	usb_hs_system_clk_src.clkr.hw.init->rate_max[VDD_NOMINAL] = 133333000;
-	usb_hs_system_clk_src.clkr.hw.init->rate_max[VDD_HIGH] = 177780000;
+	usb_hs_system_clk_src.clkr.hw.init->rate_max[VDD_NOMINAL] = 133333333;
+	usb_hs_system_clk_src.clkr.hw.init->rate_max[VDD_HIGH] = 177777778;
 	usb_hs_system_clk_src.freq_tbl = ftbl_usb_hs_system_clk_src_qm215;
 
 	/*
@@ -4267,9 +4287,19 @@ static void fixup_for_qm215(struct platform_device *pdev,
 	gcc_sdm429w_desc.clks[GCC_MDSS_ESC1_CLK] = NULL;
 }
 
+static void fixup_for_sdm439_429(void)
+{
+	/*
+	 * Below clocks are not available on SDM429/439, thus mark them NULL.
+	 */
+	gcc_sdm429w_desc.clks[GCC_GFX_TCU_CLK] = NULL;
+	gcc_sdm429w_desc.clks[GCC_GFX_TBU_CLK] = NULL;
+	gcc_sdm429w_desc.clks[GCC_GTCU_AHB_CLK] = NULL;
+}
 static const struct of_device_id gcc_sdm429w_match_table[] = {
 	{ .compatible = "qcom,gcc-sdm429w" },
 	{ .compatible = "qcom,gcc-qm215" },
+	{ .compatible = "qcom,gcc-sdm439" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, gcc_sdm429w_match_table);
@@ -4279,10 +4309,13 @@ static int gcc_sdm429w_probe(struct platform_device *pdev)
 	struct regmap *regmap;
 	struct clk *clk;
 	int ret, speed_bin;
-	bool qm215;
+	bool qm215, is_sdm439;
 
 	qm215 = of_device_is_compatible(pdev->dev.of_node,
 						"qcom,gcc-qm215");
+
+	is_sdm439 = of_device_is_compatible(pdev->dev.of_node,
+						"qcom,gcc-sdm439");
 
 	clk = clk_get(&pdev->dev, "bi_tcxo");
 	if (IS_ERR(clk)) {
@@ -4313,12 +4346,21 @@ static int gcc_sdm429w_probe(struct platform_device *pdev)
 				0xff0, 0xff0);
 	}
 
+	if (is_sdm439)
+		fixup_for_sdm439_429();
+
 	clk_alpha_pll_configure(&gpll3_out_main, regmap, &gpll3_config);
 
 	clk = devm_clk_register(&pdev->dev, &wcnss_m_clk.hw);
 	if (IS_ERR(clk)) {
 		dev_err(&pdev->dev, "Unable to register wcnss_m_clk\n");
 		return PTR_ERR(clk);
+	}
+
+	ret = devm_clk_hw_register(&pdev->dev, &gpll3_out_main_div.hw);
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to register hardware clock\n");
+		return ret;
 	}
 
 	ret = qcom_cc_really_probe(pdev, &gcc_sdm429w_desc, regmap);
@@ -4380,9 +4422,22 @@ static const struct qcom_cc_desc mdss_sdm429w_desc = {
 	.num_hwclks = ARRAY_SIZE(mdss_sdm429w_hws),
 };
 
+static void fixup_for_qm215_gcc_mdss(void)
+{
+	/*
+	 * Below clocks are not available on QM215, thus mark them NULL.
+	 */
+
+	mdss_sdm429w_desc.clks[BYTE1_CLK_SRC] = NULL;
+	mdss_sdm429w_desc.clks[PCLK1_CLK_SRC] = NULL;
+	mdss_sdm429w_desc.clks[GCC_MDSS_BYTE1_CLK] = NULL;
+	mdss_sdm429w_desc.clks[GCC_MDSS_PCLK1_CLK] = NULL;
+}
+
 static const struct of_device_id mdss_sdm429w_match_table[] = {
 	{ .compatible = "qcom,gcc-mdss-sdm429w" },
-	{ .compatible = "qcom,gcc-mdss-8917" },
+	{ .compatible = "qcom,gcc-mdss-qm215" },
+	{ .compatible = "qcom,gcc-mdss-sdm439" },
 	{}
 };
 MODULE_DEVICE_TABLE(of, mdss_sdm429w_match_table);
@@ -4394,6 +4449,10 @@ static int mdss_sdm429w_probe(struct platform_device *pdev)
 	struct resource *res;
 	void __iomem *base;
 	int ret;
+	bool is_qm215;
+
+	is_qm215 = of_device_is_compatible(pdev->dev.of_node,
+			"qcom,gcc-mdss-qm215");
 
 	clk = clk_get(&pdev->dev, "pclk0_src");
 	if (IS_ERR(clk)) {
@@ -4425,6 +4484,9 @@ static int mdss_sdm429w_probe(struct platform_device *pdev)
 					mdss_sdm429w_desc.config);
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
+
+	if (is_qm215)
+		fixup_for_qm215_gcc_mdss();
 
 	ret = qcom_cc_really_probe(pdev, &mdss_sdm429w_desc, regmap);
 	if (ret) {
