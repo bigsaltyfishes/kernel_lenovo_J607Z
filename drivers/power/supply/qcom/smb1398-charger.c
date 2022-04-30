@@ -2264,7 +2264,7 @@ static int smb1398_div2_cp_master_probe(struct smb1398_chip *chip)
 		return rc;
 	}
 
-	dev_dbg(chip->dev, "smb1398 DIV2_CP master is probed successfully\n");
+	dev_err(chip->dev, "smb1398 DIV2_CP master is probed successfully\n");
 
 	return 0;
 destroy_votable:

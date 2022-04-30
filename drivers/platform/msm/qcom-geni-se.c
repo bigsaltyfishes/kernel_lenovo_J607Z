@@ -1580,7 +1580,7 @@ void geni_se_dump_dbg_regs(struct se_geni_rsc *rsc, void __iomem *base,
 					geni_se_dev->bus_bw_noc)))
 		return;
 	if (unlikely(list_empty(&rsc->ab_list) || list_empty(&rsc->ib_list))) {
-		GENI_SE_ERR(ipc, true, rsc->ctrl_dev, "%s: Clocks not on\n",
+		GENI_SE_DBG(ipc, true, rsc->ctrl_dev, "%s: Clocks not on\n",
 								__func__);
 		return;
 	}
