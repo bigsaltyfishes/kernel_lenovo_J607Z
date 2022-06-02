@@ -29,7 +29,7 @@
 #include "sde_hdcp.h"
 #include "dp_debug.h"
 #include "sde_dbg.h"
-
+#include <../../../../drivers/usb/typec/ptn36502.h>
 #define DP_MST_DEBUG(fmt, ...) DP_DEBUG(fmt, ##__VA_ARGS__)
 
 #define dp_display_state_show(x) { \
@@ -848,11 +848,17 @@ static void dp_display_process_mst_hpd_high(struct dp_display_private *dp,
 	DP_MST_DEBUG("mst_hpd_high. mst_active:%d\n", dp->mst.mst_active);
 }
 
+int hdmi_status = 0;
 static void dp_display_host_init(struct dp_display_private *dp)
 {
 	bool flip = false;
 	bool reset;
 
+	set_ptn36502_safe_state_mode();
+	printk("%s:set ptn safe mode.ztoh\n",__func__);
+	mdelay(5);
+	set_ptn36502_usp3_and_dp2lane_mode(dp->hpd->orientation);
+	printk("%s:set ptn 2lane mode.ztoh\n",__func__);
 	if (dp_display_state_is(DP_STATE_INITIALIZED)) {
 		dp_display_state_log("[already initialized]");
 		return;
@@ -871,7 +877,7 @@ static void dp_display_host_init(struct dp_display_private *dp)
 	dp_display_abort_hdcp(dp, false);
 
 	dp_display_state_add(DP_STATE_INITIALIZED);
-
+	hdmi_status = 1;
 	/* log this as it results from user action of cable connection */
 	DP_INFO("[OK]\n");
 }
@@ -954,7 +960,7 @@ static void dp_display_host_deinit(struct dp_display_private *dp)
 	dp->aux->state = 0;
 
 	dp_display_state_remove(DP_STATE_INITIALIZED);
-
+	hdmi_status = 0;
 	/* log this as it results from user action of cable dis-connection */
 	DP_INFO("[OK]\n");
 }
@@ -1413,7 +1419,7 @@ static void dp_display_attention_work(struct work_struct *work)
 		}
 
 		if (!rc)
-			dp_audio_enable(dp, true);
+		dp_audio_enable(dp, true);
 
 		mutex_unlock(&dp->session_lock);
 		if (rc)
@@ -2609,12 +2615,13 @@ static int dp_display_create_workqueue(struct dp_display_private *dp)
 	return 0;
 }
 
-static int dp_display_fsa4480_callback(struct notifier_block *self,
+/*static int dp_display_fsa4480_callback(struct notifier_block *self,
 		unsigned long event, void *data)
 {
 	return 0;
 }
-
+*/
+/*
 static int dp_display_init_aux_switch(struct dp_display_private *dp)
 {
 	int rc = 0;
@@ -2648,7 +2655,7 @@ static int dp_display_init_aux_switch(struct dp_display_private *dp)
 end:
 	return rc;
 }
-
+*/
 static int dp_display_mst_install(struct dp_display *dp_display,
 			struct dp_mst_drm_install_info *mst_install_info)
 {
@@ -3070,12 +3077,12 @@ static int dp_display_probe(struct platform_device *pdev)
 
 	memset(&dp->mst, 0, sizeof(dp->mst));
 
-	rc = dp_display_init_aux_switch(dp);
+/*	rc = dp_display_init_aux_switch(dp);
 	if (rc) {
 		rc = -EPROBE_DEFER;
 		goto error;
 	}
-
+*/
 	rc = dp_display_create_workqueue(dp);
 	if (rc) {
 		DP_ERR("Failed to create workqueue\n");

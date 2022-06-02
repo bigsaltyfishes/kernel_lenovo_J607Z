@@ -287,6 +287,7 @@ static int dp_parser_gpio(struct dp_parser *parser)
 
 		mp->gpio_config[i].value = 0;
 	}
+	parser->no_aux_switch = true;
 
 	return 0;
 }

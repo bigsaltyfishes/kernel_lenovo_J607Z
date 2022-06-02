@@ -8,7 +8,9 @@
 #include <drm/drm_fixed.h>
 #include "dp_debug.h"
 #include <drm/drm_edid.h>
+#include <../../../../drivers/usb/typec/ptn36502.h>
 
+extern unsigned int ptncor;
 #define DP_KHZ_TO_HZ 1000
 #define DP_PANEL_DEFAULT_BPP 24
 #define DP_MAX_DS_PORT_COUNT 1
@@ -3122,6 +3124,12 @@ static void dp_panel_resolution_info(struct dp_panel_private *panel)
 		pinfo->refresh_rate, pinfo->bpp, pinfo->pixel_clk_khz,
 		panel->link->link_params.bw_code,
 		panel->link->link_params.lane_count);
+		if (panel->link->link_params.lane_count == 4) {
+			set_ptn36502_safe_state_mode();
+			mdelay(10);
+			printk("drm:%s,set ptn 4lane mode,ptncor[%d]\n",__func__,ptncor);
+			set_ptn36502_dp4lane_mode(ptncor);
+		}
 }
 
 static void dp_panel_config_sdp(struct dp_panel *dp_panel,

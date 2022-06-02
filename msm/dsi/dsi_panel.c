@@ -33,6 +33,8 @@
 #define DEFAULT_PANEL_PREFILL_LINES	25
 #define MIN_PREFILL_LINES      35
 
+int gesture_flag = 0;
+int Mode =0;
 enum dsi_dsc_ratio_type {
 	DSC_8BPC_8BPP,
 	DSC_10BPC_8BPP,
@@ -322,6 +324,12 @@ static int dsi_panel_gpio_release(struct dsi_panel *panel)
 	if (gpio_is_valid(panel->bl_config.en_gpio))
 		gpio_free(panel->bl_config.en_gpio);
 
+	if (gpio_is_valid(r_config->lcm_enn_gpio))
+		gpio_free(r_config->lcm_enn_gpio);
+
+	if (gpio_is_valid(r_config->lcm_enp_gpio))
+		gpio_free(r_config->lcm_enp_gpio);
+
 	if (gpio_is_valid(panel->reset_config.lcd_mode_sel_gpio))
 		gpio_free(panel->reset_config.lcd_mode_sel_gpio);
 
@@ -369,6 +377,26 @@ static int dsi_panel_reset(struct dsi_panel *panel)
 			goto exit;
 		}
 	}
+
+	if (gpio_is_valid(r_config->lcm_enp_gpio)) {
+		rc = gpio_direction_output(r_config->lcm_enp_gpio, 1);
+		if (rc) {
+			pr_err("unable to set dir forr_config->lcm_enp_gpio rc=%d\n", rc);
+			goto exit;
+		}
+	}
+
+	msleep(5);
+
+	if (gpio_is_valid(r_config->lcm_enn_gpio)) {
+		rc = gpio_direction_output(r_config->lcm_enn_gpio, 1);
+		if (rc) {
+			pr_err("unable to set dir forr_config->lcm_enn_gpio rc=%d\n", rc);
+			goto exit;
+		}
+	}
+
+	msleep(5);
 
 	if (r_config->count) {
 		rc = gpio_direction_output(r_config->reset_gpio,
@@ -457,13 +485,13 @@ static int dsi_panel_power_on(struct dsi_panel *panel)
 				panel->name, rc);
 		goto exit;
 	}
-
+/*
 	rc = dsi_panel_set_pinctrl_state(panel, true);
 	if (rc) {
 		DSI_ERR("[%s] failed to set pinctrl, rc=%d\n", panel->name, rc);
 		goto error_disable_vregs;
 	}
-
+*/
 	rc = dsi_panel_reset(panel);
 	if (rc) {
 		DSI_ERR("[%s] failed to reset panel, rc=%d\n", panel->name, rc);
@@ -479,9 +507,15 @@ error_disable_gpio:
 	if (gpio_is_valid(panel->bl_config.en_gpio))
 		gpio_set_value(panel->bl_config.en_gpio, 0);
 
+	if (gpio_is_valid(panel->reset_config.lcm_enp_gpio))
+		gpio_set_value(panel->reset_config.lcm_enp_gpio, 0);
+
+	if (gpio_is_valid(panel->reset_config.lcm_enn_gpio))
+		gpio_set_value(panel->reset_config.lcm_enn_gpio, 0);
+
 	(void)dsi_panel_set_pinctrl_state(panel, false);
 
-error_disable_vregs:
+//error_disable_vregs:
 	(void)dsi_pwr_enable_regulator(&panel->power_info, false);
 
 exit:
@@ -492,13 +526,17 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 {
 	int rc = 0;
 
-	if (gpio_is_valid(panel->reset_config.disp_en_gpio))
-		gpio_set_value(panel->reset_config.disp_en_gpio, 0);
+	//if (gpio_is_valid(panel->reset_config.disp_en_gpio))
+		//gpio_set_value(panel->reset_config.disp_en_gpio, 0);
 
 	if (gpio_is_valid(panel->reset_config.reset_gpio) &&
-					!panel->reset_gpio_always_on)
-		gpio_set_value(panel->reset_config.reset_gpio, 0);
-
+				!panel->reset_gpio_always_on)
+	{
+		if(Mode == 1)
+			gpio_set_value(panel->reset_config.reset_gpio, 0); 
+		else
+			gpio_set_value(panel->reset_config.reset_gpio, 1);
+	}
 	if (gpio_is_valid(panel->reset_config.lcd_mode_sel_gpio))
 		gpio_set_value(panel->reset_config.lcd_mode_sel_gpio, 0);
 
@@ -509,13 +547,35 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 				 rc);
 	}
 
+	if(!gesture_flag)
+	{
+		msleep(10);
+
+		if (gpio_is_valid(panel->reset_config.lcm_enn_gpio))
+		{
+			gpio_set_value(panel->reset_config.lcm_enn_gpio, 0);
+			gpio_direction_output(panel->reset_config.lcm_enn_gpio, 0);
+		}
+
+		msleep(5);
+
+		if (gpio_is_valid(panel->reset_config.lcm_enp_gpio))
+		{
+			gpio_set_value(panel->reset_config.lcm_enp_gpio, 0);
+			gpio_direction_output(panel->reset_config.lcm_enp_gpio, 0);
+		}
+	}
+
 	rc = dsi_panel_set_pinctrl_state(panel, false);
 	if (rc) {
 		DSI_ERR("[%s] failed set pinctrl state, rc=%d\n", panel->name,
 		       rc);
 	}
 
-	rc = dsi_pwr_enable_regulator(&panel->power_info, false);
+	if(Mode==0)
+		rc = dsi_pwr_enable_regulator(&panel->power_info, true);
+	else
+		rc = dsi_pwr_enable_regulator(&panel->power_info, false);
 	if (rc)
 		DSI_ERR("[%s] failed to enable vregs, rc=%d\n",
 				panel->name, rc);
@@ -2245,6 +2305,22 @@ static int dsi_panel_parse_gpios(struct dsi_panel *panel)
 		}
 	}
 
+		panel->reset_config.lcm_enp_gpio =
+				utils->get_named_gpio(utils->data,
+					"qcom,lcm-enp-gpio", 0);
+		if (!gpio_is_valid(panel->reset_config.lcm_enp_gpio)) {
+			pr_err("[%s] lcm-enp-gpio is not set, rc=%d\n",
+				 panel->name, rc);
+		}
+
+		panel->reset_config.lcm_enn_gpio =
+				utils->get_named_gpio(utils->data,
+					"qcom,lcm-enn-gpio", 0);
+		if (!gpio_is_valid(panel->reset_config.lcm_enn_gpio)) {
+			pr_err("[%s] lcm-enn-gpio is not set, rc=%d\n",
+				 panel->name, rc);
+		}
+
 	panel->reset_config.lcd_mode_sel_gpio = utils->get_named_gpio(
 		utils->data, mode_set_gpio_name, 0);
 	if (!gpio_is_valid(panel->reset_config.lcd_mode_sel_gpio))
@@ -3330,6 +3406,36 @@ end:
 	utils->node = panel->panel_of_node;
 }
 
+static char g_lcd_id[128];
+
+static ssize_t msm_fb_lcd_name(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+   ssize_t ret = 0;
+   sprintf(buf, "%s\n", g_lcd_id);
+   ret = strlen(buf) + 1;
+   return ret;
+}
+
+static DEVICE_ATTR(lcd_name,0664,msm_fb_lcd_name,NULL);
+static struct kobject *msm_lcd_name;
+static int msm_lcd_name_create_sysfs(void){
+   int ret;
+   msm_lcd_name=kobject_create_and_add("android_lcd",NULL);
+
+   if(msm_lcd_name==NULL){
+     pr_info("msm_lcd_name_create_sysfs_ failed\n");
+     ret=-ENOMEM;
+     return ret;
+   }
+   ret=sysfs_create_file(msm_lcd_name,&dev_attr_lcd_name.attr);
+   if(ret){
+    pr_info("%s failed \n",__func__);
+    kobject_del(msm_lcd_name);
+   }
+   return 0;
+}
+
 struct dsi_panel *dsi_panel_get(struct device *parent,
 				struct device_node *of_node,
 				struct device_node *parser_node,
@@ -3356,6 +3462,9 @@ struct dsi_panel *dsi_panel_get(struct device *parent,
 				"qcom,mdss-dsi-panel-name", NULL);
 	if (!panel->name)
 		panel->name = DSI_PANEL_DEFAULT_LABEL;
+
+    strcpy(g_lcd_id,panel->name);
+    msm_lcd_name_create_sysfs();
 
 	/*
 	 * Set panel type to LCD as default.
@@ -3464,6 +3573,57 @@ void dsi_panel_put(struct dsi_panel *panel)
 	kfree(panel);
 }
 
+static ssize_t mode(struct device *dev,
+		struct device_attribute *attr, const char *buf,size_t count)
+{
+    int val;
+
+	if (kstrtos32(buf, 0, &val))
+		return -EINVAL;
+
+	Mode = val;
+
+	return count;
+}
+
+static DEVICE_ATTR(mode, S_IRUGO | S_IWUSR,
+		NULL, mode);
+
+static struct attribute *factory_attrs[] = {
+	&dev_attr_mode.attr,
+	NULL,
+};
+
+static const struct attribute_group factory_attr_group = {
+	.name	= "factory",
+	.attrs	= factory_attrs,
+};
+
+static void panel_mode(struct dsi_panel *panel)
+{
+	static struct class *class_panel = NULL;
+	static struct device *panel_sysfs_dev = NULL;
+
+	if(!class_panel){
+		class_panel = class_create(THIS_MODULE, "panel");
+		if (IS_ERR(class_panel)) {
+			pr_err("Failed to create panel class\n");
+			return;
+		}
+	}
+
+	panel_sysfs_dev = device_create(class_panel, NULL, 0, panel, "panel-0");
+	if (IS_ERR(class_panel)) {
+		pr_err("Failed to create panel class\n");
+		return;
+	}
+
+	if(panel_sysfs_dev) {
+		if (sysfs_create_group(&panel_sysfs_dev->kobj, &factory_attr_group) < 0)
+			pr_err("create factory group fail\n");
+	}
+}
+
 int dsi_panel_drv_init(struct dsi_panel *panel,
 		       struct mipi_dsi_host *host)
 {
@@ -3517,6 +3677,8 @@ int dsi_panel_drv_init(struct dsi_panel *panel,
 			       panel->name, rc);
 		goto error_gpio_release;
 	}
+
+	panel_mode(panel);
 
 	goto exit;
 
@@ -4537,13 +4699,17 @@ int dsi_panel_unprepare(struct dsi_panel *panel)
 		return -EINVAL;
 	}
 
-	mutex_lock(&panel->panel_lock);
+	if (!gesture_flag)
+	{
 
-	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_POST_OFF);
-	if (rc) {
-		DSI_ERR("[%s] failed to send DSI_CMD_SET_POST_OFF cmds, rc=%d\n",
-		       panel->name, rc);
-		goto error;
+		mutex_lock(&panel->panel_lock);
+
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_POST_OFF);
+		if (rc) {
+			DSI_ERR("[%s] failed to send DSI_CMD_SET_POST_OFF cmds, rc=%d\n",
+			       panel->name, rc);
+			goto error;
+		}
 	}
 
 error:

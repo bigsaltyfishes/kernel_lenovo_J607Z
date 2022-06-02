@@ -53,9 +53,14 @@ struct dp_hpd *dp_hpd_get(struct device *dev, struct dp_parser *parser,
 	} else if (parser->no_aux_switch) {
 		dp_hpd = dp_gpio_hpd_get(dev, cb);
 		if (IS_ERR(dp_hpd)) {
-			DP_ERR("failed to get gpio hpd\n");
-			return dp_hpd;
-		}
+			DP_ERR("failed to get gpio hpd,goto find usbpd hpd\n");
+			dp_hpd = dp_usbpd_get(dev,cb);
+			if (IS_ERR(dp_hpd)) {
+				DP_ERR("failed to get usbpd");
+				return dp_hpd;
+			}
+			dp_hpd->type = DP_HPD_USBPD;
+		} else
 		dp_hpd->type = DP_HPD_GPIO;
 	} else {
 		dp_hpd = dp_usbpd_get(dev, cb);
