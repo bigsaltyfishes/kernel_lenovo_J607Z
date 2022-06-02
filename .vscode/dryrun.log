@@ -1,0 +1,11 @@
+make --dry-run --always-make --keep-going --print-directory
+make: Entering directory '/home/amocs/Workspace/Kernel/krnl_modules/wlan/qcacld-3.0'
+make -C /lib/modules/5.18.1-arch1-1/build M=/home/amocs/Workspace/Kernel/krnl_modules/wlan/qcacld-3.0 modules WLAN_ROOT=/home/amocs/Workspace/Kernel/krnl_modules/wlan/qcacld-3.0 MODNAME?=wlan CONFIG_QCA_WIFI_ISOC=0 CONFIG_QCA_WIFI_2_0=1 CONFIG_QCA_CLD_WLAN=m  
+make[1]: Entering directory '/home/amocs/Workspace/Kernel/krnl_modules/wlan/qcacld-3.0'
+make[1]: Leaving directory '/home/amocs/Workspace/Kernel/krnl_modules/wlan/qcacld-3.0'
+make: Leaving directory '/home/amocs/Workspace/Kernel/krnl_modules/wlan/qcacld-3.0'
+ 
+/bin/sh: line 1: cd: /lib/modules/5.18.1-arch1-1/build: No such file or directory
+make[1]: *** /lib/modules/5.18.1-arch1-1/build: No such file or directory.  Stop.
+make: *** [Makefile:26: all] Error 2
+
