@@ -1,0 +1,6 @@
+make --dry-run --always-make --keep-going --print-directory
+make: Entering directory '/home/amocs/Workspace/Kernel/krnl_modules/audio-kernel'
+make: Leaving directory '/home/amocs/Workspace/Kernel/krnl_modules/audio-kernel'
+ 
+make: *** No targets.  Stop.
+
