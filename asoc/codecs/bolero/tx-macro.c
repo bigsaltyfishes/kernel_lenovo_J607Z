@@ -15,9 +15,11 @@
 #include <soc/swr-common.h>
 #include <soc/swr-wcd.h>
 #include <asoc/msm-cdc-pinctrl.h>
+#include <linux/of_gpio.h>
 #include "bolero-cdc.h"
 #include "bolero-cdc-registers.h"
 #include "bolero-clk-rsc.h"
+#include <linux/regulator/consumer.h>
 
 #define AUTO_SUSPEND_DELAY  50 /* delay in msec */
 #define TX_MACRO_MAX_OFFSET 0x1000
@@ -47,7 +49,8 @@
 #define TX_MACRO_AMIC_UNMUTE_DELAY_MS	100
 #define TX_MACRO_DMIC_HPF_DELAY_MS	300
 #define TX_MACRO_AMIC_HPF_DELAY_MS	300
-
+static int ap_mic_on = false;
+static int dspg_mic_on = false;
 static int tx_unmute_delay = TX_MACRO_DMIC_UNMUTE_DELAY_MS;
 module_param(tx_unmute_delay, int, 0664);
 MODULE_PARM_DESC(tx_unmute_delay, "delay to unmute the tx path");
@@ -176,8 +179,16 @@ struct tx_macro_priv {
 	bool bcs_clk_en;
 	bool hs_slow_insert_complete;
 	int amic_sample_rate;
+	struct pinctrl          *pinctrl;
+        struct pinctrl_state    *pinctrl_state1;
+        struct pinctrl_state    *pinctrl_state2;
+        struct pinctrl_state    *pinctrl_state3;
+        struct pinctrl_state    *pinctrl_state4;
+	struct regulator *reg;
 };
 
+static int mic_enable(struct tx_macro_priv *tx_priv);
+static int mic_disable(struct tx_macro_priv *tx_priv);
 static bool tx_macro_get_data(struct snd_soc_component *component,
 			      struct device **tx_dev,
 			      struct tx_macro_priv **tx_priv,
@@ -234,10 +245,10 @@ static int tx_macro_mclk_enable(struct tx_macro_priv *tx_priv,
 		}
 		bolero_clk_rsc_fs_gen_request(tx_priv->dev,
 					true);
-		regcache_mark_dirty(regmap);
-		regcache_sync_region(regmap,
-				TX_START_OFFSET,
-				TX_MAX_OFFSET);
+			regcache_mark_dirty(regmap);
+			regcache_sync_region(regmap,
+					TX_START_OFFSET,
+					TX_MAX_OFFSET);
 		if (tx_priv->tx_mclk_users == 0) {
 			/* 9.6MHz MCLK, set value 0x00 if other frequency */
 			regmap_update_bits(regmap,
@@ -824,9 +835,16 @@ static const char * const bcs_ch_sel_mux_text[] = {
 	"SWR_MIC8", "SWR_MIC9", "SWR_MIC10", "SWR_MIC11",
 };
 
+static const char * const dspg_mic_text[] = {
+	"0","1","2",
+};
 static const struct soc_enum bcs_ch_sel_mux_enum =
 	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(bcs_ch_sel_mux_text),
 			    bcs_ch_sel_mux_text);
+
+static const struct soc_enum dspg_mic_enum =
+	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(dspg_mic_text),
+			    dspg_mic_text);
 
 static int tx_macro_get_bcs_ch_sel(struct snd_kcontrol *kcontrol,
 			       struct snd_ctl_elem_value *ucontrol)
@@ -878,6 +896,147 @@ static int tx_macro_put_bcs_ch_sel(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
+static int tx_macro_get_dspg_mic(struct snd_kcontrol *kcontrol,
+			       struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component =
+				snd_soc_kcontrol_component(kcontrol);
+	struct tx_macro_priv *tx_priv = NULL;
+	struct device *tx_dev = NULL;
+	int value = 0;
+
+	if (!tx_macro_get_data(component, &tx_dev, &tx_priv, __func__))
+		return -EINVAL;
+
+	ucontrol->value.integer.value[0] = value;
+	pr_err( "%s:value = %d\n",__func__,ucontrol->value.integer.value[0]);
+	return 0;
+}
+
+static int tx_macro_put_dspg_mic(struct snd_kcontrol *kcontrol,
+			     struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component =
+				snd_soc_kcontrol_component(kcontrol);
+	struct tx_macro_priv *tx_priv = NULL;
+	struct device *tx_dev = NULL;
+	int value;
+	int ret = 0;
+	
+	if (!tx_macro_get_data(component, &tx_dev, &tx_priv, __func__))
+		return -EINVAL;
+
+	if (ucontrol->value.integer.value[0] < 0 ||
+	    ucontrol->value.integer.value[0] > ARRAY_SIZE(dspg_mic_text))
+		return -EINVAL;
+	
+	value = ucontrol->value.integer.value[0];
+	
+	pr_err( "%s:value = %d,ap_mic_on:%d\n",__func__,value,ap_mic_on);
+	
+	tx_priv->pinctrl = devm_pinctrl_get(tx_priv->dev);
+	if (IS_ERR(tx_priv->pinctrl)) {
+		pr_err("lct Couldn't get  pinctrl rc=%d\n", PTR_ERR(tx_priv->pinctrl));
+		tx_priv->pinctrl = NULL;
+	}
+	if(value == 2 && !ap_mic_on){
+		if (tx_priv->pinctrl) {
+
+		tx_priv->pinctrl_state1 = pinctrl_lookup_state(tx_priv->pinctrl,
+						"mic_active");
+		if (IS_ERR(tx_priv->pinctrl_state1)) {
+			pr_err("Couldn't get pinctrl state\n");
+			return 0;
+		}
+		ret = pinctrl_select_state(tx_priv->pinctrl, tx_priv->pinctrl_state1);
+		if (ret) {
+			pr_err( "cannot select mic active state\n");
+			return ret;
+		}
+
+		tx_priv->pinctrl_state4 = pinctrl_lookup_state(tx_priv->pinctrl,
+						"mic_switch_sleep");
+		if (IS_ERR(tx_priv->pinctrl_state4)) {
+			pr_err("Couldn't get pinctrl state\n");
+			return 0;
+		}
+			ret = pinctrl_select_state(tx_priv->pinctrl, tx_priv->pinctrl_state4);
+		if (ret) {
+			pr_err( "cannot set mic switch sleep state\n");
+			return ret;
+		}
+		dspg_mic_on = true;
+		pr_err( "enable DSP dmic disable switch,dspg_mic_on:%d\n",dspg_mic_on);
+		}
+	}else if(value == 1 && !ap_mic_on){
+		if (tx_priv->pinctrl) {
+
+		tx_priv->pinctrl_state1 = pinctrl_lookup_state(tx_priv->pinctrl,
+						"mic_active");
+		if (IS_ERR(tx_priv->pinctrl_state1)) {
+			pr_err("Couldn't get pinctrl state\n");
+			return 0;
+		}
+		ret = pinctrl_select_state(tx_priv->pinctrl, tx_priv->pinctrl_state1);
+		if (ret) {
+			pr_err( "cannot select mic active state\n");
+			return ret;
+		}
+
+		tx_priv->pinctrl_state3 = pinctrl_lookup_state(tx_priv->pinctrl,
+				"mic_switch_active");
+		if (IS_ERR(tx_priv->pinctrl_state3)) {
+			pr_err("Couldn't get pinctrl state\n");
+			return 0;
+		}
+		ret = pinctrl_select_state(tx_priv->pinctrl, tx_priv->pinctrl_state3);
+		if (ret) {
+			pr_err( "cannot set mic switch active state\n");
+			return ret;
+		}
+		dspg_mic_on = true;
+		pr_err( "enable DSP dmic enable switch dspg_mic_on:%d\n",dspg_mic_on);
+		}
+	}
+	else
+	{	//if ap mic is on ,don`t power down micbias
+		if(!ap_mic_on){
+		if (tx_priv->pinctrl) {
+
+		tx_priv->pinctrl_state2 = pinctrl_lookup_state(tx_priv->pinctrl,
+						"mic_sleep");
+		if (IS_ERR(tx_priv->pinctrl_state2)) {
+			pr_err("Couldn't get pinctrl state\n");
+			return 0;
+		}
+		ret = pinctrl_select_state(tx_priv->pinctrl, tx_priv->pinctrl_state2);
+		if (ret) {
+			pr_err( "cannot select mic sleep state\n");
+			return ret;
+		}
+		
+		tx_priv->pinctrl_state4 = pinctrl_lookup_state(tx_priv->pinctrl,
+						"mic_switch_sleep");
+		if (IS_ERR(tx_priv->pinctrl_state4)) {
+			pr_err("Couldn't get pinctrl state\n");
+			return 0;
+		}
+			ret = pinctrl_select_state(tx_priv->pinctrl, tx_priv->pinctrl_state4);
+		if (ret) {
+			pr_err( "cannot set mic switch sleep state\n");
+			return ret;
+		}
+		dspg_mic_on = false;
+		pr_err( "disable DSP dmic disable switch\n");
+		}}
+		else{
+		pr_err( "AP dmic is on,don`t close micbias\n");
+		}
+	}
+
+	return 0;
+}
+
 static int tx_macro_enable_dmic(struct snd_soc_dapm_widget *w,
 		struct snd_kcontrol *kcontrol, int event)
 {
@@ -886,6 +1045,12 @@ static int tx_macro_enable_dmic(struct snd_soc_dapm_widget *w,
 	unsigned int dmic = 0;
 	int ret = 0;
 	char *wname = NULL;
+
+	struct tx_macro_priv *tx_priv = NULL;
+	struct device *tx_dev = NULL;
+
+	if (!tx_macro_get_data(component, &tx_dev, &tx_priv, __func__))
+		return -EINVAL;
 
 	wname = strpbrk(w->name, "01234567");
 	if (!wname) {
@@ -905,9 +1070,11 @@ static int tx_macro_enable_dmic(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
+		mic_enable(tx_priv);
 		bolero_dmic_clk_enable(component, dmic, DMIC_TX, true);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
+		mic_disable(tx_priv);
 		bolero_dmic_clk_enable(component, dmic, DMIC_TX, false);
 		break;
 	}
@@ -2415,6 +2582,9 @@ static const struct snd_kcontrol_new tx_macro_snd_controls[] = {
 
 	SOC_SINGLE_EXT("DEC0_BCS Switch", SND_SOC_NOPM, 0, 1, 0,
 		       tx_macro_get_bcs, tx_macro_set_bcs),
+
+	SOC_ENUM_EXT("DSPG_mic", dspg_mic_enum,
+			tx_macro_get_dspg_mic, tx_macro_put_dspg_mic),
 };
 
 static int tx_macro_register_event_listener(struct snd_soc_component *component,
@@ -3180,6 +3350,198 @@ static void tx_macro_init_ops(struct macro_ops *ops,
 	ops->clk_enable = __tx_macro_mclk_enable;
 }
 
+static int mic_enable(struct tx_macro_priv *tx_priv)
+{
+	int ret;
+	pr_err("%s,dspg_mic_on:%d",__func__,dspg_mic_on);
+	tx_priv->pinctrl = devm_pinctrl_get(tx_priv->dev);
+	if (IS_ERR(tx_priv->pinctrl)) {
+		pr_err("lct Couldn't get bq nit pinctrl rc=%d\n", PTR_ERR(tx_priv->pinctrl));
+		tx_priv->pinctrl = NULL;
+	}
+
+	if (tx_priv->pinctrl) {
+		tx_priv->pinctrl_state1 = pinctrl_lookup_state(tx_priv->pinctrl,
+				"mic_active");
+		if (IS_ERR(tx_priv->pinctrl_state1)) {
+			pr_err("Couldn't get pinctrl state\n");
+			return 0;
+		}
+		ret = pinctrl_select_state(tx_priv->pinctrl, tx_priv->pinctrl_state1);
+		if (ret) {
+			pr_err( "cannot select mic active state\n");
+			return ret;
+		}
+		tx_priv->pinctrl_state3 = pinctrl_lookup_state(tx_priv->pinctrl,
+				"mic_switch_active");
+		if (IS_ERR(tx_priv->pinctrl_state3)) {
+			pr_err("Couldn't get pinctrl state\n");
+			return 0;
+		}
+		ret = pinctrl_select_state(tx_priv->pinctrl, tx_priv->pinctrl_state3);
+		if (ret) {
+			pr_err( "cannot set mic switch active state\n");
+			return ret;
+		}
+	}
+	ap_mic_on = true;
+	pr_err( "enable dmic\n");
+	return ret;
+
+}
+
+static int mic_disable(struct tx_macro_priv *tx_priv)
+{
+	int ret;
+	pr_err("%s,dspg_mic_on:%d,ap_mic_on:%d\n",__func__,dspg_mic_on,ap_mic_on);
+	tx_priv->pinctrl = devm_pinctrl_get(tx_priv->dev);
+	if (IS_ERR(tx_priv->pinctrl)) {
+		pr_err("lct Couldn't get bq nit pinctrl rc=%d\n", PTR_ERR(tx_priv->pinctrl));
+		tx_priv->pinctrl = NULL;
+	}
+
+	if (tx_priv->pinctrl) {
+		if(ap_mic_on && dspg_mic_on){
+		
+		tx_priv->pinctrl_state1 = pinctrl_lookup_state(tx_priv->pinctrl,
+						"mic_active");
+		if (IS_ERR(tx_priv->pinctrl_state1)) {
+			pr_err("Couldn't get pinctrl state\n");
+			return 0;
+		}
+		ret = pinctrl_select_state(tx_priv->pinctrl, tx_priv->pinctrl_state1);
+		if (ret) {
+			pr_err( "cannot select mic active state\n");
+			return ret;
+		}
+
+		tx_priv->pinctrl_state4 = pinctrl_lookup_state(tx_priv->pinctrl,
+						"mic_switch_sleep");
+		if (IS_ERR(tx_priv->pinctrl_state4)) {
+			pr_err("Couldn't get pinctrl state\n");
+			return 0;
+		}
+		ret = pinctrl_select_state(tx_priv->pinctrl, tx_priv->pinctrl_state4);
+		if (ret) {
+			pr_err( "cannot set mic switch sleep state\n");
+			return ret;
+		}
+
+			pr_err("open dspg micbias when close ap mic\n");
+		}
+		else{
+
+		tx_priv->pinctrl_state2 = pinctrl_lookup_state(tx_priv->pinctrl,
+				"mic_sleep");
+		if (IS_ERR(tx_priv->pinctrl_state2)) {
+			pr_err("Couldn't get pinctrl state\n");
+			return 0;
+		}
+		ret = pinctrl_select_state(tx_priv->pinctrl, tx_priv->pinctrl_state2);
+		if (ret) {
+			pr_err( "cannot select mic sleep state\n");
+			return ret;
+		}
+
+		tx_priv->pinctrl_state4 = pinctrl_lookup_state(tx_priv->pinctrl,
+				"mic_switch_sleep");
+		if (IS_ERR(tx_priv->pinctrl_state4)) {
+			pr_err("Couldn't get pinctrl state\n");
+			return 0;
+		}
+		ret = pinctrl_select_state(tx_priv->pinctrl, tx_priv->pinctrl_state4);
+		if (ret) {
+			pr_err( "cannot set mic switch sleep state\n");
+			return ret;
+		}
+		pr_err( "disable dmic\n");
+		}
+	}
+	ap_mic_on = false;
+	return ret;
+}
+
+//add by zad for mic ldo init
+static int mic_ldo_int(struct tx_macro_priv *tx_priv)
+{
+	int ret;
+	tx_priv->pinctrl = devm_pinctrl_get(tx_priv->dev);
+	if (IS_ERR(tx_priv->pinctrl)) {
+		pr_err("lct Couldn't get bq nit pinctrl rc=%d\n", PTR_ERR(tx_priv->pinctrl));
+		tx_priv->pinctrl = NULL;
+	}
+
+	if (tx_priv->pinctrl) {
+
+		tx_priv->pinctrl_state2 = pinctrl_lookup_state(tx_priv->pinctrl,
+						"mic_sleep");
+		if (IS_ERR(tx_priv->pinctrl_state2)) {
+			pr_err("Couldn't get pinctrl state\n");
+			return 0;
+		}
+		ret = pinctrl_select_state(tx_priv->pinctrl, tx_priv->pinctrl_state2);
+		if (ret) {
+			pr_err( "cannot select mic sleep state\n");
+			return ret;
+		}
+
+		tx_priv->pinctrl_state4 = pinctrl_lookup_state(tx_priv->pinctrl,
+						"mic_switch_sleep");
+		if (IS_ERR(tx_priv->pinctrl_state4)) {
+			pr_err("Couldn't get pinctrl state\n");
+			return 0;
+		}
+		ret = pinctrl_select_state(tx_priv->pinctrl, tx_priv->pinctrl_state4);
+		if (ret) {
+			pr_err( "cannot set mic switch sleep state\n");
+			return ret;
+		}
+	}
+	return 0;
+}
+
+static int mic_ldo_config(struct tx_macro_priv *tx_priv)
+{
+	int r;
+
+	if (of_get_property(tx_priv->dev->of_node,"vdd-supply", NULL)) {
+		// Get the regulator handle
+		tx_priv->reg = regulator_get(tx_priv->dev,
+				"vdd");
+		if (IS_ERR(tx_priv->reg)) {
+			tx_priv->reg = NULL;
+			dev_err(tx_priv->dev,
+					"%s: regulator_get failed, ret = %d\n",
+					__func__, r);
+			return r;
+		}else{
+			dev_err(tx_priv->dev,
+					"%s: regulator_enable success, ret = %d\n",
+					__func__, r);
+
+			r =  regulator_set_voltage(tx_priv->reg, 2800000, 2800000);
+			if (r < 0) {
+				regulator_put(tx_priv->reg);
+				dev_err(tx_priv->dev, "%s:set voltage failed\n", __func__);
+				return r;
+			}
+			r = regulator_enable(tx_priv->reg);
+			if (r < 0) {
+				regulator_put(tx_priv->reg);
+				dev_err(tx_priv->dev, "%s:enale regulator failed\n", __func__);
+				return r;
+			}
+		}
+
+	} else {
+		tx_priv->reg = NULL;
+		dev_err(tx_priv->dev,
+				"%s: regulator entry not present\n", __func__);
+		return 0;
+	}
+	return r;
+}
+//add end
 static int tx_macro_probe(struct platform_device *pdev)
 {
 	struct macro_ops ops = {0};
@@ -3256,6 +3618,22 @@ static int tx_macro_probe(struct platform_device *pdev)
 		sample_rate, tx_priv) == TX_MACRO_DMIC_SAMPLE_RATE_UNDEFINED)
 			return -EINVAL;
 	}
+//add by zad for mic ldo init
+	ret = mic_ldo_int(tx_priv);
+	if(ret < 0){
+		dev_err(&pdev->dev,
+			"%s: could not find pinctrl entry in dt\n",
+			__func__);
+	}
+//add end
+//add by zad for Switch ldo enable 
+	mic_ldo_config(tx_priv);
+	if(ret < 0){
+		dev_err(&pdev->dev,
+			"%s: could not set regulator\n",
+			__func__);
+	}
+//end
 	if (is_used_tx_swr_gpio) {
 		tx_priv->reset_swr = true;
 		INIT_WORK(&tx_priv->tx_macro_add_child_devices_work,
